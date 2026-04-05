@@ -1,0 +1,8 @@
+[test-groups.perf]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "test(perf_)"
+test-group = "perf"
+success-output = "immediate"
+slow-timeout = { period = "300s" }

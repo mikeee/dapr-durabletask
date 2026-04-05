@@ -8,7 +8,8 @@
 //! The sidecar binary is expected at `tmp/durabletask-sidecar` (built by the
 //! nix flake shellHook) or at the path in `DURABLETASK_SIDECAR_BIN`.
 
-use std::net::TcpListener;
+mod harness;
+
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,79 +19,9 @@ use dapr_durabletask::client::TaskHubGrpcClient;
 use dapr_durabletask::task::{ActivityContext, when_all, when_any};
 use dapr_durabletask::worker::{ReconnectPolicy, TaskHubGrpcWorker, WorkerOptions};
 
+use harness::WorkerGuard;
+
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-// ── Per-test sidecar environment ─────────────────────────────────────────────
-
-fn sidecar_bin() -> Option<String> {
-    let bin = std::env::var("DURABLETASK_SIDECAR_BIN").unwrap_or_else(|_| {
-        let workspace = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        format!("{}/tmp/durabletask-sidecar", workspace)
-    });
-    if std::path::Path::new(&bin).exists() {
-        Some(bin)
-    } else {
-        None
-    }
-}
-
-fn free_port() -> u16 {
-    // Bind to port 0 to let the OS assign a free port, then release it.
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct TestEnv {
-    pub address: String,
-    sidecar: Child,
-}
-
-impl TestEnv {
-    /// Spawns a sidecar on a free port and waits up to 4 s for it to be ready.
-    /// Returns `None` if the sidecar binary is absent.
-    async fn start() -> Option<Self> {
-        let bin = sidecar_bin()?;
-        let port = free_port();
-        let address = format!("http://127.0.0.1:{}", port);
-
-        let sidecar = Command::new(&bin)
-            .args(["--port", &port.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("Failed to start sidecar '{}': {}", bin, e));
-
-        // Poll until the sidecar binds the port (up to 4 s).
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return Some(Self { address, sidecar });
-            }
-        }
-        eprintln!("[e2e] Sidecar on port {} failed to start within 4s", port);
-        None
-    }
-
-    fn new_worker(&self) -> TaskHubGrpcWorker {
-        TaskHubGrpcWorker::new(&self.address)
-    }
-
-    async fn new_client(&self) -> TaskHubGrpcClient {
-        TaskHubGrpcClient::new(&self.address)
-            .await
-            .expect("failed to connect to sidecar")
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        let _ = self.sidecar.kill();
-        let _ = self.sidecar.wait();
-    }
-}
 
 // ── Controllable sidecar for reconnect tests ──────────────────────────────────
 
@@ -105,7 +36,7 @@ impl SidecarHandle {
     /// Launch a sidecar on the given port. Does NOT wait for it to be ready.
     /// Returns `None` if the sidecar binary is absent.
     fn launch(port: u16) -> Option<Self> {
-        let bin = sidecar_bin()?;
+        let bin = harness::sidecar_bin()?;
         let process = Command::new(&bin)
             .args(["--port", &port.to_string()])
             .stdout(Stdio::null())
@@ -163,41 +94,6 @@ fn test_reconnect_policy() -> ReconnectPolicy {
         .with_max_delay(Duration::from_millis(200))
         .with_multiplier(2.0)
         .with_jitter(false)
-}
-
-/// Starts a per-test sidecar and binds it to `$name`, or panics.
-macro_rules! setup {
-    ($name:ident) => {
-        let $name = TestEnv::start()
-            .await
-            .expect("sidecar not available — run `nix develop` to build it, or set DURABLETASK_SIDECAR_BIN");
-    };
-}
-
-// ── Worker lifecycle helper ───────────────────────────────────────────────────
-
-struct WorkerGuard {
-    shutdown: tokio_util::sync::CancellationToken,
-    handle: tokio::task::JoinHandle<()>,
-}
-
-impl WorkerGuard {
-    fn start(worker: TaskHubGrpcWorker) -> Self {
-        let shutdown = tokio_util::sync::CancellationToken::new();
-        let token = shutdown.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = worker.start(token).await {
-                eprintln!("Worker error: {}", e);
-            }
-        });
-        Self { shutdown, handle }
-    }
-
-    async fn stop(self) {
-        self.shutdown.cancel();
-        let _ = self.handle.await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
 }
 
 // ===========================================================================
@@ -998,12 +894,12 @@ async fn test_human_interaction_three_orchestrations() {
 ///   4. Worker should connect and complete an orchestration.
 #[tokio::test]
 async fn test_worker_connects_after_sidecar_starts_late() {
-    if sidecar_bin().is_none() {
+    if harness::sidecar_bin().is_none() {
         eprintln!("[e2e] SKIP — sidecar not available");
         return;
     }
 
-    let port = free_port();
+    let port = harness::free_port();
     let address = format!("http://127.0.0.1:{}", port);
 
     let options = WorkerOptions::new().with_reconnect_policy(test_reconnect_policy());
@@ -1057,12 +953,12 @@ async fn test_worker_connects_after_sidecar_starts_late() {
 /// the same port, and successfully complete a new orchestration.
 #[tokio::test]
 async fn test_worker_reconnects_after_sidecar_restart() {
-    if sidecar_bin().is_none() {
+    if harness::sidecar_bin().is_none() {
         eprintln!("[e2e] SKIP — sidecar not available");
         return;
     }
 
-    let port = free_port();
+    let port = harness::free_port();
     let sidecar = SidecarHandle::launch(port).expect("sidecar binary not found");
     assert!(
         sidecar.wait_ready(Duration::from_secs(5)).await,
@@ -1121,13 +1017,13 @@ async fn test_worker_reconnects_after_sidecar_restart() {
 /// error once N connection attempts have been exhausted.
 #[tokio::test]
 async fn test_worker_stops_after_max_attempts() {
-    if sidecar_bin().is_none() {
+    if harness::sidecar_bin().is_none() {
         eprintln!("[e2e] SKIP — sidecar not available");
         return;
     }
 
     // Nothing is listening on this port.
-    let port = free_port();
+    let port = harness::free_port();
     let address = format!("http://127.0.0.1:{}", port);
 
     let policy = ReconnectPolicy::new()
@@ -1155,12 +1051,12 @@ async fn test_worker_stops_after_max_attempts() {
 /// even when the configured delay is very long.
 #[tokio::test]
 async fn test_worker_shutdown_interrupts_reconnect_wait() {
-    if sidecar_bin().is_none() {
+    if harness::sidecar_bin().is_none() {
         eprintln!("[e2e] SKIP — sidecar not available");
         return;
     }
 
-    let port = free_port(); // nothing listening
+    let port = harness::free_port(); // nothing listening
     let address = format!("http://127.0.0.1:{}", port);
 
     // 60 s backoff — we expect the shutdown to fire long before this.
@@ -1192,12 +1088,12 @@ async fn test_worker_shutdown_interrupts_reconnect_wait() {
 /// from each bounce, with work completing after each restart.
 #[tokio::test]
 async fn test_worker_survives_multiple_sidecar_restarts() {
-    if sidecar_bin().is_none() {
+    if harness::sidecar_bin().is_none() {
         eprintln!("[e2e] SKIP — sidecar not available");
         return;
     }
 
-    let port = free_port();
+    let port = harness::free_port();
     let mut sidecar = SidecarHandle::launch(port).expect("sidecar binary not found");
     assert!(
         sidecar.wait_ready(Duration::from_secs(5)).await,
