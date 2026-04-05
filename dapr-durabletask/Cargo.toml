@@ -14,7 +14,7 @@ opentelemetry = ["dep:opentelemetry"]
 
 [dependencies]
 # Protobuf types
-dapr-durabletask-proto = { path = "../dapr-durabletask-proto" }
+dapr-durabletask-proto = { path = "../dapr-durabletask-proto", version = "0.0.1" }
 
 # gRPC
 tonic = { version = "0.14.5", features = ["tls-ring"] }
