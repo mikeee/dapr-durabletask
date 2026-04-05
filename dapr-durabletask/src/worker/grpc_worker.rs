@@ -361,30 +361,19 @@ impl TaskHubGrpcWorker {
     ) -> proto::WorkflowResponse {
         let instance_id = request.instance_id.clone();
 
-        let name = request
+        // Single-pass extraction of orchestrator name and version from history.
+        let (name, version) = request
             .past_events
             .iter()
             .chain(request.new_events.iter())
             .find_map(|e| {
                 if let Some(EventType::ExecutionStarted(es)) = &e.event_type {
-                    Some(es.name.clone())
+                    Some((es.name.clone(), es.version.clone()))
                 } else {
                     None
                 }
             })
             .unwrap_or_default();
-
-        let version = request
-            .past_events
-            .iter()
-            .chain(request.new_events.iter())
-            .find_map(|e| {
-                if let Some(EventType::ExecutionStarted(es)) = &e.event_type {
-                    es.version.clone()
-                } else {
-                    None
-                }
-            });
 
         if let Err(e) =
             validate_identifier(&name, "orchestrator name", options.max_identifier_length)

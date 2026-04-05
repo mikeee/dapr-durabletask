@@ -22,15 +22,12 @@ impl Future for WhenAnyTask {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        for (i, task) in this.tasks.iter().enumerate() {
-            if task.is_complete() {
-                return Poll::Ready(Ok(i));
+        // Single pass: poll registers wakers and detects the first ready task.
+        for (i, task) in this.tasks.iter_mut().enumerate() {
+            match Pin::new(task).poll(cx) {
+                Poll::Ready(_) => return Poll::Ready(Ok(i)),
+                Poll::Pending => {}
             }
-        }
-
-        for task in &mut this.tasks {
-            let mut pinned = Pin::new(task);
-            let _ = pinned.as_mut().poll(cx);
         }
 
         Poll::Pending

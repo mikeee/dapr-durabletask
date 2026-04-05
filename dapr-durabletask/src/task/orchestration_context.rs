@@ -64,6 +64,7 @@ impl OrchestrationContext {
         current_utc_datetime: chrono::DateTime<chrono::Utc>,
         is_replaying: bool,
         options: &crate::worker::WorkerOptions,
+        event_count_hint: usize,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(OrchestrationContextInner {
@@ -75,10 +76,10 @@ impl OrchestrationContext {
                 name,
                 custom_status: None,
                 sequence_number: 0,
-                pending_tasks: HashMap::new(),
+                pending_tasks: HashMap::with_capacity(event_count_hint / 2),
                 pending_event_tasks: HashMap::new(),
                 buffered_events: HashMap::new(),
-                pending_actions: Vec::new(),
+                pending_actions: Vec::with_capacity(event_count_hint / 2),
                 completion_status: None,
                 completion_result: None,
                 completion_failure: None,
@@ -620,6 +621,7 @@ mod tests {
             chrono::Utc::now(),
             false,
             &crate::worker::WorkerOptions::default(),
+            0,
         )
     }
 

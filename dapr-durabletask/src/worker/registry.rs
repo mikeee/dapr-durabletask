@@ -286,6 +286,7 @@ mod tests {
             chrono::Utc::now(),
             false,
             &crate::worker::WorkerOptions::default(),
+            0,
         );
         let result = (f)(ctx).await;
         assert_eq!(result.unwrap(), Some("\"done\"".to_string()));

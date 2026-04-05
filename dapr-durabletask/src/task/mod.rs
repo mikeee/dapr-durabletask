@@ -1,7 +1,7 @@
 mod activity_context;
 pub(crate) mod completable_task;
 mod options;
-mod orchestration_context;
+pub(crate) mod orchestration_context;
 mod when_all;
 mod when_any;
 

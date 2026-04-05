@@ -24,20 +24,12 @@ impl Future for WhenAllTask {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        for task in &this.tasks {
-            if let Some(TaskResult::Failed(details)) = task.get_result() {
-                return Poll::Ready(Err(DurableTaskError::TaskFailed {
-                    message: details.message.clone(),
-                    failure_details: Some(details),
-                }));
-            }
-        }
-
+        // Single pass: poll each task, short-circuit on failure, track readiness.
         let mut all_complete = true;
         for task in &mut this.tasks {
-            let mut pinned = Pin::new(task);
-            match pinned.as_mut().poll(cx) {
-                Poll::Ready(_) => {}
+            match Pin::new(task).poll(cx) {
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(_)) => {}
                 Poll::Pending => {
                     all_complete = false;
                 }
