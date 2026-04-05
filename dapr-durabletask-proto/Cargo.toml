@@ -1,0 +1,24 @@
+[package]
+name = "dapr-durabletask-proto"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Generated protobuf types for the Dapr Durable Task Framework"
+license = "Apache-2.0"
+authors = ["Mike Nguyen <hey@mike.ee>"]
+repository = "https://github.com/mikeee/dapr-durabletask"
+
+[dependencies]
+tonic = "0.14.5"
+tonic-prost = "0.14.5"
+prost = "0.14.3"
+prost-types = "0.14.3"
+tonic-prost-build = { version = "0.14.5", optional = true }
+
+[features]
+generate = ["dep:tonic-prost-build"]
+
+[[bin]]
+name = "proto-gen"
+path = "src/bin/proto-gen.rs"
+required-features = ["generate"]

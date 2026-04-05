@@ -1,0 +1,62 @@
+name: Upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  proto-drift:
+    name: Proto drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Fetch upstream protos
+        run: |
+          mkdir -p /tmp/upstream-protos
+          for f in history_events.proto orchestration.proto orchestrator_actions.proto orchestrator_service.proto; do
+            curl -fsSL "https://raw.githubusercontent.com/dapr/durabletask-protobuf/main/protos/$f" \
+              -o "/tmp/upstream-protos/$f"
+          done
+
+      - name: Compare protos
+        run: |
+          if ! diff -rq proto/ /tmp/upstream-protos/; then
+            echo "::error::Proto files have diverged from dapr/durabletask-protobuf main"
+            diff -ru proto/ /tmp/upstream-protos/ || true
+            exit 1
+          fi
+          echo "Proto files are in sync with upstream"
+
+  test:
+    name: Test against latest sidecar (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.85", stable, nightly]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: cachix/install-nix-action@96951a368ba55167b55f1c916f7d416bac6505fe # v31
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Install Rust ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+
+      - name: Build latest sidecar
+        run: |
+          nix develop --command bash -c 'echo "sidecar ready: $DURABLETASK_SIDECAR_BIN"'
+
+      - name: Test
+        run: |
+          nix develop --command bash -c '
+            export PATH="$HOME/.rustup/toolchains/${{ matrix.toolchain }}-x86_64-unknown-linux-gnu/bin:$PATH"
+            cargo nextest run --workspace --all-features
+          '

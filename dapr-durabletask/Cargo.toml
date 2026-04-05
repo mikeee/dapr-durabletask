@@ -1,0 +1,60 @@
+[package]
+name = "dapr-durabletask"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Dapr Durable Task Framework"
+license = "Apache-2.0"
+authors = ["Mike Nguyen <hey@mike.ee>"]
+repository = "https://github.com/mikeee/dapr-durabletask"
+
+[features]
+default = []
+opentelemetry = ["dep:opentelemetry"]
+
+[dependencies]
+# Protobuf types
+dapr-durabletask-proto = { path = "../dapr-durabletask-proto" }
+
+# gRPC
+tonic = { version = "0.14.5", features = ["tls-ring"] }
+
+# Async runtime
+tokio = { version = "1.50.0", features = ["full"] }
+tokio-stream = "0.1.18"
+tokio-util = "0.7.18"
+
+# Serialisation
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+# Logging / Tracing
+tracing = "0.1.44"
+
+# OpenTelemetry (optional)
+opentelemetry = { version = "0.31.0", optional = true }
+
+# Utilities
+thiserror = "2.0.18"
+uuid = { version = "1.23.0", features = ["v4"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+futures = "0.3.32"
+async-trait = "0.1.89"
+
+[dev-dependencies]
+tracing-subscriber = "0.3.23"
+libc = "0.2.183"
+opentelemetry = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
+
+[[example]]
+name = "activity_sequence"
+path = "examples/activity_sequence.rs"
+
+[[example]]
+name = "fanout_fanin"
+path = "examples/fanout_fanin.rs"
+
+[[example]]
+name = "human_interaction"
+path = "examples/human_interaction.rs"
