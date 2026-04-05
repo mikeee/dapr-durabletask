@@ -213,17 +213,38 @@ impl PerfResult {
         eprintln!("┌─────────────────────────────────────────────────────────┐");
         eprintln!("│ {:<55} │", label);
         eprintln!("├─────────────────────────────────────────────────────────┤");
-        eprintln!("│  Executions:  {:<8}                                 │", self.executions);
+        eprintln!(
+            "│  Executions:  {:<8}                                 │",
+            self.executions
+        );
         if let Some(sched) = self.schedule_elapsed {
-            eprintln!("│  Schedule:    {:>8.2}s ({:>6.0} sched/s)               │",
-                sched.as_secs_f64(), self.executions as f64 / sched.as_secs_f64());
+            eprintln!(
+                "│  Schedule:    {:>8.2}s ({:>6.0} sched/s)               │",
+                sched.as_secs_f64(),
+                self.executions as f64 / sched.as_secs_f64()
+            );
         }
-        eprintln!("│  Wall time:   {:>8.2}s                                 │", secs);
-        eprintln!("│  Throughput:  {:>8.1} workflows/s                     │", self.throughput());
+        eprintln!(
+            "│  Wall time:   {:>8.2}s                                 │",
+            secs
+        );
+        eprintln!(
+            "│  Throughput:  {:>8.1} workflows/s                     │",
+            self.throughput()
+        );
         eprintln!("├─────────────────────────────────────────────────────────┤");
-        eprintln!("│  Latency p50: {:>8.1}ms  (server-side)                │", p50.as_secs_f64() * 1000.0);
-        eprintln!("│  Latency p95: {:>8.1}ms                               │", p95.as_secs_f64() * 1000.0);
-        eprintln!("│  Latency p99: {:>8.1}ms                               │", p99.as_secs_f64() * 1000.0);
+        eprintln!(
+            "│  Latency p50: {:>8.1}ms  (server-side)                │",
+            p50.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "│  Latency p95: {:>8.1}ms                               │",
+            p95.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "│  Latency p99: {:>8.1}ms                               │",
+            p99.as_secs_f64() * 1000.0
+        );
         eprintln!("└─────────────────────────────────────────────────────────┘");
         eprintln!();
     }
@@ -237,19 +258,46 @@ impl PerfResult {
         eprintln!("┌─────────────────────────────────────────────────────────┐");
         eprintln!("│ {:<55} │", label);
         eprintln!("├─────────────────────────────────────────────────────────┤");
-        eprintln!("│  Orchestrations: {:<8}                              │", self.executions);
-        eprintln!("│  Activities:     {:<8}                              │", total_activities);
+        eprintln!(
+            "│  Orchestrations: {:<8}                              │",
+            self.executions
+        );
+        eprintln!(
+            "│  Activities:     {:<8}                              │",
+            total_activities
+        );
         if let Some(sched) = self.schedule_elapsed {
-            eprintln!("│  Schedule:       {:>8.2}s ({:>6.0} sched/s)            │",
-                sched.as_secs_f64(), self.executions as f64 / sched.as_secs_f64());
+            eprintln!(
+                "│  Schedule:       {:>8.2}s ({:>6.0} sched/s)            │",
+                sched.as_secs_f64(),
+                self.executions as f64 / sched.as_secs_f64()
+            );
         }
-        eprintln!("│  Wall time:      {:>8.2}s                              │", secs);
-        eprintln!("│  Orch/s:         {:>8.1}                              │", self.throughput());
-        eprintln!("│  Act/s:          {:>8.1}                              │", total_activities as f64 / secs);
+        eprintln!(
+            "│  Wall time:      {:>8.2}s                              │",
+            secs
+        );
+        eprintln!(
+            "│  Orch/s:         {:>8.1}                              │",
+            self.throughput()
+        );
+        eprintln!(
+            "│  Act/s:          {:>8.1}                              │",
+            total_activities as f64 / secs
+        );
         eprintln!("├─────────────────────────────────────────────────────────┤");
-        eprintln!("│  Latency p50:    {:>8.1}ms  (server-side)              │", p50.as_secs_f64() * 1000.0);
-        eprintln!("│  Latency p95:    {:>8.1}ms                             │", p95.as_secs_f64() * 1000.0);
-        eprintln!("│  Latency p99:    {:>8.1}ms                             │", p99.as_secs_f64() * 1000.0);
+        eprintln!(
+            "│  Latency p50:    {:>8.1}ms  (server-side)              │",
+            p50.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "│  Latency p95:    {:>8.1}ms                             │",
+            p95.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "│  Latency p99:    {:>8.1}ms                             │",
+            p99.as_secs_f64() * 1000.0
+        );
         eprintln!("└─────────────────────────────────────────────────────────┘");
         eprintln!();
     }
@@ -402,8 +450,7 @@ fn worker_deep_chain(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
             let mut acc = 0_i64;
             for i in 0..steps {
                 let result = ctx.call_activity("deep_step", i).await?;
-                let val: i64 =
-                    serde_json::from_str(result.as_deref().unwrap_or("0")).unwrap_or(0);
+                let val: i64 = serde_json::from_str(result.as_deref().unwrap_or("0")).unwrap_or(0);
                 acc += val;
             }
             Ok(Some(serde_json::to_string(&acc).unwrap()))
@@ -510,10 +557,7 @@ async fn perf_100_orchestrations_fan_out_50_activities() {
 
     let input = Some(serde_json::to_string(&fan_width).unwrap());
     let result = run_batch(&mut client, name, input, orch_count).await;
-    result.print_with_activities(
-        "Batch — fan-out / fan-in",
-        orch_count * fan_width as usize,
-    );
+    result.print_with_activities("Batch — fan-out / fan-in", orch_count * fan_width as usize);
 
     guard.stop().await;
 }
@@ -604,7 +648,9 @@ async fn perf_sustained_30s_fan_out_10_activities() {
 
     let input = Some(serde_json::to_string(&fan_width).unwrap());
     let result = run_sustained(&mut client, name, input, Duration::from_secs(secs)).await;
-    result.print(&format!("Sustained {secs}s — fan-out {fan_width} activities"));
+    result.print(&format!(
+        "Sustained {secs}s — fan-out {fan_width} activities"
+    ));
 
     guard.stop().await;
 }
@@ -646,9 +692,7 @@ async fn perf_sustained_60s_mixed_sequential_and_parallel() {
     let mut client = env.new_client().await;
 
     let result = run_sustained(&mut client, name, None, Duration::from_secs(secs)).await;
-    result.print(&format!(
-        "Sustained {secs}s — 3 sequential + 5 parallel"
-    ));
+    result.print(&format!("Sustained {secs}s — 3 sequential + 5 parallel"));
 
     guard.stop().await;
 }
