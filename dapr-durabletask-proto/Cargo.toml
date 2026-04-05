@@ -14,9 +14,10 @@ tonic-prost = "0.14.5"
 prost = "0.14.3"
 prost-types = "0.14.3"
 tonic-prost-build = { version = "0.14.5", optional = true }
+tempfile = { version = "3", optional = true }
 
 [features]
-generate = ["dep:tonic-prost-build"]
+generate = ["dep:tonic-prost-build", "dep:tempfile"]
 
 [[bin]]
 name = "proto-gen"
