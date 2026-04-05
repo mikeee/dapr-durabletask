@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = [
+    "dapr-durabletask",
+    "dapr-durabletask-proto"
+    ]
