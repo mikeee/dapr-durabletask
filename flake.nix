@@ -61,7 +61,7 @@
             echo "  sidecar: $DURABLETASK_SIDECAR_BIN"
             echo ""
             echo "Commands:"
-            echo "  cargo nextest run --workspace --all-features  - run all tests via nextest"
+            echo "  cargo nextest run --workspace --all-features"
             echo "  cargo run -p dapr-durabletask-proto --features generate --bin proto-gen"
           '';
 
