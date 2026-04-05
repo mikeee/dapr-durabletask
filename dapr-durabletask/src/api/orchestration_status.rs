@@ -30,19 +30,21 @@ impl OrchestrationStatus {
     }
 }
 
-impl From<i32> for OrchestrationStatus {
-    fn from(value: i32) -> Self {
+impl TryFrom<i32> for OrchestrationStatus {
+    type Error = i32;
+
+    fn try_from(value: i32) -> std::result::Result<Self, Self::Error> {
         match value {
-            0 => Self::Running,
-            1 => Self::Completed,
-            2 => Self::ContinuedAsNew,
-            3 => Self::Failed,
-            4 => Self::Canceled,
-            5 => Self::Terminated,
-            6 => Self::Pending,
-            7 => Self::Suspended,
-            8 => Self::Stalled,
-            _ => Self::Running,
+            0 => Ok(Self::Running),
+            1 => Ok(Self::Completed),
+            2 => Ok(Self::ContinuedAsNew),
+            3 => Ok(Self::Failed),
+            4 => Ok(Self::Canceled),
+            5 => Ok(Self::Terminated),
+            6 => Ok(Self::Pending),
+            7 => Ok(Self::Suspended),
+            8 => Ok(Self::Stalled),
+            _ => Err(value),
         }
     }
 }
@@ -65,17 +67,7 @@ impl From<OrchestrationStatus> for i32 {
 
 impl fmt::Display for OrchestrationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Running => write!(f, "Running"),
-            Self::Completed => write!(f, "Completed"),
-            Self::ContinuedAsNew => write!(f, "ContinuedAsNew"),
-            Self::Failed => write!(f, "Failed"),
-            Self::Canceled => write!(f, "Canceled"),
-            Self::Terminated => write!(f, "Terminated"),
-            Self::Pending => write!(f, "Pending"),
-            Self::Suspended => write!(f, "Suspended"),
-            Self::Stalled => write!(f, "Stalled"),
-        }
+        fmt::Debug::fmt(self, f)
     }
 }
 
@@ -86,15 +78,15 @@ mod tests {
     #[test]
     fn test_roundtrip_conversion() {
         for value in 0..=8 {
-            let status = OrchestrationStatus::from(value);
+            let status = OrchestrationStatus::try_from(value).unwrap();
             let back: i32 = status.into();
             assert_eq!(value, back);
         }
     }
 
     #[test]
-    fn test_unknown_value_defaults_to_running() {
-        assert_eq!(OrchestrationStatus::from(99), OrchestrationStatus::Running);
+    fn test_unknown_value_returns_error() {
+        assert!(OrchestrationStatus::try_from(99).is_err());
     }
 
     #[test]

@@ -245,7 +245,7 @@ mod tests {
         for _ in 0..50 {
             let d = iter.next_delay().unwrap().as_secs_f64();
             // ±10 % around 1000 ms → [900, 1100] ms.
-            assert!(d >= 0.9 && d <= 1.11, "jitter out of range: {d}");
+            assert!((0.9..=1.11).contains(&d), "jitter out of range: {d}");
         }
     }
 

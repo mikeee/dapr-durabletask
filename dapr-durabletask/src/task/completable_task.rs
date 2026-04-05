@@ -104,15 +104,10 @@ impl Future for CompletableTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::task::{RawWaker, RawWakerVTable};
+    use std::task::Waker;
 
     fn noop_waker() -> Waker {
-        fn noop(_: *const ()) {}
-        fn clone(p: *const ()) -> RawWaker {
-            RawWaker::new(p, &VTABLE)
-        }
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
-        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+        Waker::noop().clone()
     }
 
     #[test]

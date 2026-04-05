@@ -1173,7 +1173,7 @@ async fn test_worker_drains_in_flight_activity_on_shutdown() {
     worker
         .registry_mut()
         .add_named_orchestrator("drain_orch", |ctx| async move {
-            ctx.call_activity("slow_activity", &()).await?;
+            ctx.call_activity("slow_activity", ()).await?;
             Ok(None)
         });
     worker

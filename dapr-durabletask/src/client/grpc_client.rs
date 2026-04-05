@@ -198,7 +198,7 @@ impl TaskHubGrpcClient {
             get_inputs_and_outputs: fetch_payloads,
         };
         let response = self.inner.get_instance(request).await?;
-        Ok(OrchestrationState::from_proto(&response.into_inner()))
+        Ok(OrchestrationState::try_from(&response.into_inner()).ok())
     }
 
     /// Wait for an orchestration to start running.
@@ -230,7 +230,7 @@ impl TaskHubGrpcClient {
             fut.await?
         };
 
-        let state = OrchestrationState::from_proto(&response.into_inner());
+        let state = OrchestrationState::try_from(&response.into_inner()).ok();
         tracing::debug!(
             instance_id = %instance_id,
             status = ?state.as_ref().map(|s| &s.runtime_status),
@@ -268,7 +268,7 @@ impl TaskHubGrpcClient {
             fut.await?
         };
 
-        let state = OrchestrationState::from_proto(&response.into_inner());
+        let state = OrchestrationState::try_from(&response.into_inner()).ok();
         tracing::debug!(
             instance_id = %instance_id,
             status = ?state.as_ref().map(|s| &s.runtime_status),

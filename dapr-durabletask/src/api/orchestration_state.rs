@@ -17,21 +17,29 @@ pub struct OrchestrationState {
     pub failure_details: Option<FailureDetails>,
 }
 
-impl OrchestrationState {
+/// Error returned when converting a `GetInstanceResponse` to an `OrchestrationState`
+/// when the instance does not exist or has no workflow state.
+#[derive(Debug, Clone)]
+pub struct InstanceNotFound;
+
+impl TryFrom<&proto::GetInstanceResponse> for OrchestrationState {
+    type Error = InstanceNotFound;
+
     /// Constructs an `OrchestrationState` from a proto `GetInstanceResponse`.
     ///
-    /// Returns `None` if the response indicates the instance does not exist
-    /// or has no workflow state.
-    pub fn from_proto(response: &proto::GetInstanceResponse) -> Option<Self> {
-        let state = response.workflow_state.as_ref()?;
+    /// Returns `Err(InstanceNotFound)` if the response indicates the instance
+    /// does not exist or has no workflow state.
+    fn try_from(response: &proto::GetInstanceResponse) -> std::result::Result<Self, Self::Error> {
+        let state = response.workflow_state.as_ref().ok_or(InstanceNotFound)?;
         if !response.exists {
-            return None;
+            return Err(InstanceNotFound);
         }
 
-        Some(Self {
+        Ok(Self {
             instance_id: state.instance_id.clone(),
             name: state.name.clone(),
-            runtime_status: OrchestrationStatus::from(state.workflow_status),
+            runtime_status: OrchestrationStatus::try_from(state.workflow_status)
+                .unwrap_or(OrchestrationStatus::Running),
             created_at: state.created_timestamp.as_ref().map(timestamp_to_datetime),
             last_updated_at: state
                 .last_updated_timestamp
@@ -40,13 +48,12 @@ impl OrchestrationState {
             serialized_input: state.input.clone(),
             serialized_output: state.output.clone(),
             serialized_custom_status: state.custom_status.clone(),
-            failure_details: state
-                .failure_details
-                .as_ref()
-                .map(FailureDetails::from_proto),
+            failure_details: state.failure_details.as_ref().map(FailureDetails::from),
         })
     }
+}
 
+impl OrchestrationState {
     /// Returns `Ok(())` if the orchestration has not failed, or an error with
     /// the failure details if it has.
     pub fn raise_if_failed(&self) -> super::Result<()> {
@@ -151,12 +158,12 @@ mod tests {
     }
 
     #[test]
-    fn from_proto_valid_response() {
+    fn try_from_valid_response() {
         let resp = proto::GetInstanceResponse {
             exists: true,
             workflow_state: Some(make_workflow_state(1)), // Completed
         };
-        let state = OrchestrationState::from_proto(&resp).unwrap();
+        let state = OrchestrationState::try_from(&resp).unwrap();
         assert_eq!(state.instance_id, "test-id");
         assert_eq!(state.name, "TestOrch");
         assert_eq!(state.runtime_status, OrchestrationStatus::Completed);
@@ -166,21 +173,21 @@ mod tests {
     }
 
     #[test]
-    fn from_proto_not_exists() {
+    fn try_from_not_exists() {
         let resp = proto::GetInstanceResponse {
             exists: false,
             workflow_state: Some(make_workflow_state(0)),
         };
-        assert!(OrchestrationState::from_proto(&resp).is_none());
+        assert!(OrchestrationState::try_from(&resp).is_err());
     }
 
     #[test]
-    fn from_proto_no_workflow_state() {
+    fn try_from_no_workflow_state() {
         let resp = proto::GetInstanceResponse {
             exists: true,
             workflow_state: None,
         };
-        assert!(OrchestrationState::from_proto(&resp).is_none());
+        assert!(OrchestrationState::try_from(&resp).is_err());
     }
 
     #[test]

@@ -295,7 +295,7 @@ impl OrchestrationExecutor {
                 let details = e
                     .failure_details
                     .as_ref()
-                    .map(FailureDetails::from_proto)
+                    .map(FailureDetails::from)
                     .unwrap_or_else(|| FailureDetails {
                         message: "Task failed".to_string(),
                         error_type: "Unknown".to_string(),
@@ -360,7 +360,7 @@ impl OrchestrationExecutor {
                 let details = e
                     .failure_details
                     .as_ref()
-                    .map(FailureDetails::from_proto)
+                    .map(FailureDetails::from)
                     .unwrap_or_else(|| FailureDetails {
                         message: "Sub-orchestration failed".to_string(),
                         error_type: "Unknown".to_string(),

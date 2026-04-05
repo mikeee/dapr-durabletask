@@ -39,7 +39,6 @@ thiserror = "2.0.18"
 uuid = { version = "1.23.0", features = ["v4"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 futures = "0.3.32"
-async-trait = "0.1.89"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.23"

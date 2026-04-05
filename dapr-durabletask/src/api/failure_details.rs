@@ -8,9 +8,8 @@ pub struct FailureDetails {
     pub stack_trace: Option<String>,
 }
 
-impl FailureDetails {
-    /// Constructs a `FailureDetails` from the proto `TaskFailureDetails` message.
-    pub fn from_proto(details: &proto::TaskFailureDetails) -> Self {
+impl From<&proto::TaskFailureDetails> for FailureDetails {
+    fn from(details: &proto::TaskFailureDetails) -> Self {
         Self {
             message: details.error_message.clone(),
             error_type: details.error_type.clone(),
@@ -32,7 +31,7 @@ mod tests {
             inner_failure: None,
             is_non_retriable: false,
         };
-        let fd = FailureDetails::from_proto(&proto_details);
+        let fd = FailureDetails::from(&proto_details);
         assert_eq!(fd.message, "something broke");
         assert_eq!(fd.error_type, "RuntimeError");
         assert_eq!(fd.stack_trace.as_deref(), Some("at main.rs:42"));
@@ -47,7 +46,7 @@ mod tests {
             inner_failure: None,
             is_non_retriable: true,
         };
-        let fd = FailureDetails::from_proto(&proto_details);
+        let fd = FailureDetails::from(&proto_details);
         assert_eq!(fd.message, "msg");
         assert_eq!(fd.error_type, "Error");
         assert!(fd.stack_trace.is_none());

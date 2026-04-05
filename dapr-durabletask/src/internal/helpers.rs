@@ -26,7 +26,7 @@ pub fn validate_identifier(
             "{label} exceeds maximum length of {max_length}"
         )));
     }
-    if value.contains('\0') || value.chars().any(|c| c.is_control()) {
+    if value.chars().any(|c| c.is_control()) {
         return Err(DurableTaskError::Other(format!(
             "{label} contains invalid characters"
         )));

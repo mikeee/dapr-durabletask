@@ -138,9 +138,9 @@ impl OrchestrationContext {
     }
 
     /// Set a custom status string.
-    pub fn set_custom_status(&self, status: &str) {
+    pub fn set_custom_status(&self, status: impl Into<String>) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.custom_status = Some(status.to_string());
+        inner.custom_status = Some(status.into());
     }
 
     /// Schedule an activity for execution.
@@ -172,7 +172,18 @@ impl OrchestrationContext {
         input: impl Serialize,
         app_id: Option<&str>,
     ) -> CompletableTask {
-        let input_json = to_json(&input).ok().flatten();
+        let input_json = match to_json(&input) {
+            Ok(json) => json,
+            Err(e) => {
+                let task = CompletableTask::new();
+                task.fail(FailureDetails {
+                    message: format!("Failed to serialize activity input: {e}"),
+                    error_type: "SerializationError".to_string(),
+                    stack_trace: None,
+                });
+                return task;
+            }
+        };
         self.call_activity_raw(name, input_json, app_id)
     }
 
@@ -228,7 +239,10 @@ impl OrchestrationContext {
         input: impl Serialize,
         options: ActivityOptions,
     ) -> BoxFuture<'static, crate::api::Result<Option<String>>> {
-        let input_json = to_json(&input).ok().flatten();
+        let input_json = match to_json(&input) {
+            Ok(json) => json,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let name = name.to_string();
         let app_id = options.app_id.clone();
         let ctx = self.clone();
@@ -288,7 +302,18 @@ impl OrchestrationContext {
         instance_id: Option<&str>,
         app_id: Option<&str>,
     ) -> CompletableTask {
-        let input_json = to_json(&input).ok().flatten();
+        let input_json = match to_json(&input) {
+            Ok(json) => json,
+            Err(e) => {
+                let task = CompletableTask::new();
+                task.fail(FailureDetails {
+                    message: format!("Failed to serialize sub-orchestrator input: {e}"),
+                    error_type: "SerializationError".to_string(),
+                    stack_trace: None,
+                });
+                return task;
+            }
+        };
         self.call_sub_orchestrator_raw(name, input_json, instance_id, app_id)
     }
 
@@ -355,7 +380,10 @@ impl OrchestrationContext {
         input: impl Serialize,
         options: SubOrchestratorOptions,
     ) -> BoxFuture<'static, crate::api::Result<Option<String>>> {
-        let input_json = to_json(&input).ok().flatten();
+        let input_json = match to_json(&input) {
+            Ok(json) => json,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         let name = name.to_string();
         let instance_id = options.instance_id.clone();
         let app_id = options.app_id.clone();
