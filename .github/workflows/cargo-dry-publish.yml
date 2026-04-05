@@ -1,0 +1,25 @@
+name: Publish (dry-run)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Publish dapr-durabletask-proto (dry-run)
+        run: cargo publish -p dapr-durabletask-proto --dry-run
+
+      - name: Publish dapr-durabletask (dry-run)
+        run: cargo publish -p dapr-durabletask --dry-run
