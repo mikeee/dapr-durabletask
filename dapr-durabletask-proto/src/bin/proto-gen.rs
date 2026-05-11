@@ -10,6 +10,7 @@ const PROTO_FILES: &[&str] = &[
     "orchestration.proto",
     "history_events.proto",
     "orchestrator_actions.proto",
+    "attestation.proto",
 ];
 
 /// Shallow-clone the upstream proto repository and copy the required `.proto`

@@ -17,8 +17,10 @@ impl ActivityExecutor {
         encoded_input: Option<String>,
         parent_trace_context: Option<&proto::TraceContext>,
         completion_token: String,
+        propagated_history: Option<crate::api::PropagatedHistory>,
     ) -> proto::ActivityResponse {
-        let ctx = ActivityContext::new(instance_id.to_string(), task_id, task_execution_id);
+        let ctx = ActivityContext::new(instance_id.to_string(), task_id, task_execution_id)
+            .with_propagated_history(propagated_history);
 
         tracing::info!(
             instance_id = %instance_id,
@@ -105,6 +107,7 @@ mod tests {
             Some("\"hello\"".to_string()),
             None,
             "token".to_string(),
+            None,
         )
         .await;
 
@@ -130,6 +133,7 @@ mod tests {
             None,
             None,
             String::new(),
+            None,
         )
         .await;
 
@@ -155,6 +159,7 @@ mod tests {
             None,
             None,
             String::new(),
+            None,
         )
         .await;
 

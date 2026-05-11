@@ -57,3 +57,7 @@ path = "examples/fanout_fanin.rs"
 [[example]]
 name = "human_interaction"
 path = "examples/human_interaction.rs"
+
+[[example]]
+name = "workflow_history_propagation"
+path = "examples/workflow_history_propagation.rs"

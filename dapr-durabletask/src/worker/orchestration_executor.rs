@@ -32,6 +32,7 @@ impl OrchestrationExecutor {
         new_events: Vec<proto::HistoryEvent>,
         completion_token: String,
         options: &WorkerOptions,
+        propagated_history: Option<crate::api::PropagatedHistory>,
     ) -> crate::api::Result<proto::WorkflowResponse> {
         tracing::info!(
             instance_id = %instance_id,
@@ -49,6 +50,13 @@ impl OrchestrationExecutor {
             options,
             old_events.len() + new_events.len(),
         );
+
+        // Stash the propagated history (if any) before running the function so
+        // that ctx.propagated_history() is available during user code.
+        if propagated_history.is_some() {
+            let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.propagated_history = propagated_history;
+        }
 
         // Process all history events under a single lock acquisition.
         // Previously each event locked/unlocked individually — O(N) lock ops
@@ -462,7 +470,8 @@ impl OrchestrationExecutor {
             | EventType::WorkflowCompleted(_)
             | EventType::EventSent(_)
             | EventType::ContinueAsNew(_)
-            | EventType::ExecutionStalled(_) => {}
+            | EventType::ExecutionStalled(_)
+            | EventType::DetachedWorkflowInstanceCreated(_) => {}
         }
     }
 
@@ -641,6 +650,7 @@ mod tests {
                 parent_trace_context: None,
                 task_execution_id: String::new(),
                 rerun_parent_instance_info: None,
+                history_propagation_scope: None,
             })),
         }
     }
@@ -658,6 +668,8 @@ mod tests {
                 task_scheduled_id,
                 result,
                 task_execution_id: String::new(),
+                attestation: None,
+                signer_certificate: None,
             })),
         }
     }
@@ -677,6 +689,8 @@ mod tests {
                     is_non_retriable: false,
                 }),
                 task_execution_id: String::new(),
+                attestation: None,
+                signer_certificate: None,
             })),
         }
     }
@@ -697,6 +711,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -745,6 +760,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -787,6 +803,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -833,6 +850,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -882,6 +900,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -917,6 +936,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -955,6 +975,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -1008,6 +1029,7 @@ mod tests {
             new_events,
             String::new(),
             &WorkerOptions::default(),
+            None,
         )
         .await
         .unwrap();

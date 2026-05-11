@@ -1,8 +1,11 @@
+use crate::api::PropagatedHistory;
+
 /// Context provided to activity functions during execution.
 pub struct ActivityContext {
     pub(crate) orchestration_id: String,
     pub(crate) task_id: i32,
     pub(crate) task_execution_id: String,
+    pub(crate) propagated_history: Option<PropagatedHistory>,
 }
 
 impl ActivityContext {
@@ -11,7 +14,15 @@ impl ActivityContext {
             orchestration_id,
             task_id,
             task_execution_id,
+            propagated_history: None,
         }
+    }
+
+    /// Construct an activity context with an attached propagated history
+    /// (delivered by the worker via `ActivityRequest.propagated_history`).
+    pub fn with_propagated_history(mut self, history: Option<PropagatedHistory>) -> Self {
+        self.propagated_history = history;
+        self
     }
 
     pub fn orchestration_id(&self) -> &str {
@@ -29,6 +40,12 @@ impl ActivityContext {
     /// idempotency keys or deduplication.
     pub fn task_execution_id(&self) -> &str {
         &self.task_execution_id
+    }
+
+    /// Returns history forwarded from the calling workflow, if the workflow
+    /// scheduled this activity with a non-`None` history propagation scope.
+    pub fn propagated_history(&self) -> Option<&PropagatedHistory> {
+        self.propagated_history.as_ref()
     }
 }
 
