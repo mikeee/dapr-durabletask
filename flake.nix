@@ -16,15 +16,30 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        rustToolchain = pkgs.rust-bin.stable."1.85.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
-        };
-      in
-      {
-        devShells.default = pkgs.mkShell {
+        rustExtensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
+
+        # Build a Rust toolchain for a given version selector.
+        # Accepted values:
+        #   - "nightly"  → latest nightly (with extensions)
+        #   - "stable"   → latest stable
+        #   - "1.85.0"   → that exact stable release (MSRV)
+        mkRustToolchain = rustVersion:
+          if rustVersion == "nightly" then
+            pkgs.rust-bin.selectLatestNightlyWith (toolchain:
+              toolchain.default.override { extensions = rustExtensions; })
+          else if rustVersion == "stable" then
+            pkgs.rust-bin.stable.latest.default.override {
+              extensions = rustExtensions;
+            }
+          else
+            pkgs.rust-bin.stable.${rustVersion}.default.override {
+              extensions = rustExtensions;
+            };
+
+        mkDevShell = rustVersion: pkgs.mkShell {
           buildInputs = [
             # Rust toolchain
-            rustToolchain
+            (mkRustToolchain rustVersion)
 
             # Protobuf compiler (required by build.rs / tonic-build)
             pkgs.protobuf
@@ -67,6 +82,17 @@
 
           # Ensure protoc is found by tonic-build
           PROTOC = "${pkgs.protobuf}/bin/protoc";
+        };
+      in
+      {
+        # Named devShells let CI select a Rust toolchain via
+        # `nix develop .#<name>` without touching the host's rustup.
+        # The default shell pins MSRV (1.85).
+        devShells = {
+          default = mkDevShell "1.85.0";
+          msrv = mkDevShell "1.85.0";
+          stable = mkDevShell "stable";
+          nightly = mkDevShell "nightly";
         };
       }
     );

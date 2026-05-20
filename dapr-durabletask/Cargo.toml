@@ -1,12 +1,12 @@
 [package]
 name = "dapr-durabletask"
-version = "0.0.1"
-edition = "2024"
-rust-version = "1.85"
 description = "Dapr Durable Task Framework"
-license = "Apache-2.0"
-authors = ["Mike Nguyen <hey@mike.ee>"]
-repository = "https://github.com/mikeee/dapr-durabletask"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [features]
 default = []
