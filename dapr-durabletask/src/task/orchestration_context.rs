@@ -5,7 +5,10 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::api::{DurableTaskError, FailureDetails, HistoryPropagationScope, OrchestrationStatus, PropagatedHistory, RetryPolicy};
+use crate::api::{
+    DurableTaskError, FailureDetails, HistoryPropagationScope, OrchestrationStatus,
+    PropagatedHistory, RetryPolicy,
+};
 use crate::internal::{to_json, to_timestamp};
 use crate::proto;
 
@@ -338,7 +341,13 @@ impl OrchestrationContext {
                 return task;
             }
         };
-        self.call_sub_orchestrator_raw(name, input_json, instance_id, app_id, history_propagation_scope)
+        self.call_sub_orchestrator_raw(
+            name,
+            input_json,
+            instance_id,
+            app_id,
+            history_propagation_scope,
+        )
     }
 
     /// Internal: schedule a sub-orchestration using a pre-serialised JSON input.

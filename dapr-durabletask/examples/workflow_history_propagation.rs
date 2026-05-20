@@ -78,8 +78,7 @@ async fn fraud_check_child(ctx: OrchestrationContext) -> OrchestratorResult {
         .call_activity_with_options(
             "audit_log",
             "fraud check completed",
-            ActivityOptions::new()
-                .with_history_propagation(HistoryPropagationScope::OwnHistory),
+            ActivityOptions::new().with_history_propagation(HistoryPropagationScope::OwnHistory),
         )
         .await?;
 

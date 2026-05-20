@@ -2339,7 +2339,10 @@ async fn test_schedule_activity_emits_history_propagation_scope() {
     });
 
     let ts = chrono::Utc::now();
-    let old_events = vec![make_workflow_started(ts), make_execution_started("test", None)];
+    let old_events = vec![
+        make_workflow_started(ts),
+        make_execution_started("test", None),
+    ];
     let resp = run_executor(&orch_fn, old_events, vec![]).await.unwrap();
 
     let scheduled = get_schedule_actions(&resp.actions);
@@ -2368,7 +2371,10 @@ async fn test_schedule_child_workflow_emits_own_history_scope() {
     });
 
     let ts = chrono::Utc::now();
-    let old_events = vec![make_workflow_started(ts), make_execution_started("test", None)];
+    let old_events = vec![
+        make_workflow_started(ts),
+        make_execution_started("test", None),
+    ];
     let resp = run_executor(&orch_fn, old_events, vec![]).await.unwrap();
 
     let children = get_child_workflow_actions(&resp.actions);
@@ -2388,7 +2394,10 @@ async fn test_no_history_propagation_scope_when_unset() {
         })
     });
     let ts = chrono::Utc::now();
-    let old_events = vec![make_workflow_started(ts), make_execution_started("test", None)];
+    let old_events = vec![
+        make_workflow_started(ts),
+        make_execution_started("test", None),
+    ];
     let resp = run_executor(&orch_fn, old_events, vec![]).await.unwrap();
     let scheduled = get_schedule_actions(&resp.actions);
     assert_eq!(scheduled.len(), 1);
@@ -2402,8 +2411,7 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
     // ctx.propagated_history().
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> =
-        StdArc::new(StdMutex::new(None));
+    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> = StdArc::new(StdMutex::new(None));
     let captured_clone = captured.clone();
     let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
         let captured = captured_clone.clone();
@@ -2422,7 +2430,10 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
     );
 
     let ts = chrono::Utc::now();
-    let old_events = vec![make_workflow_started(ts), make_execution_started("child", None)];
+    let old_events = vec![
+        make_workflow_started(ts),
+        make_execution_started("child", None),
+    ];
 
     let _resp = OrchestrationExecutor::execute(
         &orch_fn,
@@ -2436,7 +2447,11 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
     .await
     .unwrap();
 
-    let history = captured.lock().unwrap().clone().expect("propagated history present");
+    let history = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("propagated history present");
     assert_eq!(history.scope, HistoryPropagationScope::Lineage);
     assert_eq!(history.chunks.len(), 2);
     assert_eq!(history.events.len(), 5);
@@ -2444,11 +2459,11 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
         history.app_ids(),
         vec!["grandparent-app".to_string(), "parent-app".to_string()]
     );
-    assert_eq!(history.workflow_by_name("Grandparent").unwrap().event_count, 2);
     assert_eq!(
-        history.events_by_workflow_name("Parent").unwrap().len(),
-        3
+        history.workflow_by_name("Grandparent").unwrap().event_count,
+        2
     );
+    assert_eq!(history.events_by_workflow_name("Parent").unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -2456,8 +2471,7 @@ async fn test_propagated_history_own_history_drops_ancestors() {
     // OwnHistory: child must see the parent's events but NOT the grandparent's.
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> =
-        StdArc::new(StdMutex::new(None));
+    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> = StdArc::new(StdMutex::new(None));
     let captured_clone = captured.clone();
     let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
         let captured = captured_clone.clone();
@@ -2475,7 +2489,10 @@ async fn test_propagated_history_own_history_drops_ancestors() {
     );
 
     let ts = chrono::Utc::now();
-    let old_events = vec![make_workflow_started(ts), make_execution_started("child", None)];
+    let old_events = vec![
+        make_workflow_started(ts),
+        make_execution_started("child", None),
+    ];
 
     let _resp = OrchestrationExecutor::execute(
         &orch_fn,
@@ -2489,7 +2506,11 @@ async fn test_propagated_history_own_history_drops_ancestors() {
     .await
     .unwrap();
 
-    let history = captured.lock().unwrap().clone().expect("propagated history present");
+    let history = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("propagated history present");
     assert_eq!(history.scope, HistoryPropagationScope::OwnHistory);
     assert_eq!(history.chunks.len(), 1);
     assert_eq!(history.app_ids(), vec!["parent-app".to_string()]);
@@ -2521,7 +2542,10 @@ async fn test_propagated_history_absent_returns_none() {
     let ts = chrono::Utc::now();
     let _ = run_executor(
         &orch_fn,
-        vec![make_workflow_started(ts), make_execution_started("child", None)],
+        vec![
+            make_workflow_started(ts),
+            make_execution_started("child", None),
+        ],
         vec![],
     )
     .await

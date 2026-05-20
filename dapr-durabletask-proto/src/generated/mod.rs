@@ -32,9 +32,7 @@ pub struct TaskFailureDetails {
     #[prost(message, optional, tag = "3")]
     pub stack_trace: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, boxed, tag = "4")]
-    pub inner_failure: ::core::option::Option<
-        ::prost::alloc::boxed::Box<TaskFailureDetails>,
-    >,
+    pub inner_failure: ::core::option::Option<::prost::alloc::boxed::Box<TaskFailureDetails>>,
     #[prost(bool, tag = "5")]
     pub is_non_retriable: bool,
 }
@@ -104,10 +102,12 @@ pub struct WorkflowState {
     #[prost(message, optional, tag = "14")]
     pub parent_instance_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(map = "string, string", tag = "15")]
-    pub tags: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub tags:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "16")]
+    pub parent_app_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "17")]
+    pub started_at: ::core::option::Option<::prost_types::Timestamp>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -448,10 +448,8 @@ pub struct ExecutionStartedEvent {
     #[prost(message, optional, tag = "8")]
     pub workflow_span_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(map = "string, string", tag = "9")]
-    pub tags: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub tags:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionCompletedEvent {
@@ -881,10 +879,8 @@ pub struct CreateDetachedWorkflowAction {
     #[prost(message, optional, tag = "6")]
     pub execution_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(map = "string, string", tag = "7")]
-    pub tags: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub tags:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
     #[prost(message, optional, tag = "8")]
     pub parent_trace_context: ::core::option::Option<TraceContext>,
     #[prost(message, optional, tag = "9")]
@@ -960,9 +956,7 @@ pub struct WorkflowAction {
         oneof = "workflow_action::WorkflowActionType",
         tags = "2, 3, 4, 5, 6, 7, 10, 11"
     )]
-    pub workflow_action_type: ::core::option::Option<
-        workflow_action::WorkflowActionType,
-    >,
+    pub workflow_action_type: ::core::option::Option<workflow_action::WorkflowActionType>,
 }
 /// Nested message and enum types in `WorkflowAction`.
 pub mod workflow_action {
@@ -1073,10 +1067,8 @@ pub struct CreateInstanceRequest {
     #[prost(message, optional, tag = "7")]
     pub execution_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(map = "string, string", tag = "8")]
-    pub tags: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub tags:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
     #[prost(message, optional, tag = "9")]
     pub parent_trace_context: ::core::option::Option<TraceContext>,
 }
@@ -1238,9 +1230,7 @@ pub struct RerunWorkflowFromEventRequest {
     /// rerunning from a child workflow. Only accepted if the event ID given is
     /// targeting a child workflow creation event.
     #[prost(string, optional, tag = "6")]
-    pub new_child_workflow_instance_id: ::core::option::Option<
-        ::prost::alloc::string::String,
-    >,
+    pub new_child_workflow_instance_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// RerunWorkflowFromEventResponse is the response to executing
 /// RerunWorkflowFromEvent.
@@ -1323,10 +1313,10 @@ pub mod task_hub_sidecar_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct TaskHubSidecarServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -1365,14 +1355,13 @@ pub mod task_hub_sidecar_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    http::Request<tonic::body::Body>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             TaskHubSidecarServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -1412,18 +1401,11 @@ pub mod task_hub_sidecar_service_client {
             &mut self,
             request: impl tonic::IntoRequest<()>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/Hello",
-            );
+            let path = http::uri::PathAndQuery::from_static("/TaskHubSidecarService/Hello");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "Hello"));
@@ -1433,22 +1415,13 @@ pub mod task_hub_sidecar_service_client {
         pub async fn start_instance(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateInstanceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreateInstanceResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::CreateInstanceResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/StartInstance",
-            );
+            let path = http::uri::PathAndQuery::from_static("/TaskHubSidecarService/StartInstance");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "StartInstance"));
@@ -1458,22 +1431,13 @@ pub mod task_hub_sidecar_service_client {
         pub async fn get_instance(
             &mut self,
             request: impl tonic::IntoRequest<super::GetInstanceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetInstanceResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetInstanceResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/GetInstance",
-            );
+            let path = http::uri::PathAndQuery::from_static("/TaskHubSidecarService/GetInstance");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "GetInstance"));
@@ -1483,76 +1447,52 @@ pub mod task_hub_sidecar_service_client {
         pub async fn wait_for_instance_start(
             &mut self,
             request: impl tonic::IntoRequest<super::GetInstanceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetInstanceResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetInstanceResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/WaitForInstanceStart",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/WaitForInstanceStart");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "WaitForInstanceStart"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "WaitForInstanceStart",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Waits for a workflow instance to reach a completion state (completed, failed, terminated, etc.).
         pub async fn wait_for_instance_completion(
             &mut self,
             request: impl tonic::IntoRequest<super::GetInstanceRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetInstanceResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetInstanceResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/TaskHubSidecarService/WaitForInstanceCompletion",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "WaitForInstanceCompletion"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "WaitForInstanceCompletion",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Raises an event to a running workflow instance.
         pub async fn raise_event(
             &mut self,
             request: impl tonic::IntoRequest<super::RaiseEventRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RaiseEventResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::RaiseEventResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/RaiseEvent",
-            );
+            let path = http::uri::PathAndQuery::from_static("/TaskHubSidecarService/RaiseEvent");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "RaiseEvent"));
@@ -1562,47 +1502,31 @@ pub mod task_hub_sidecar_service_client {
         pub async fn terminate_instance(
             &mut self,
             request: impl tonic::IntoRequest<super::TerminateRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::TerminateResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::TerminateResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/TerminateInstance",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/TerminateInstance");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("TaskHubSidecarService", "TerminateInstance"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "TerminateInstance",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Suspends a running workflow instance.
         pub async fn suspend_instance(
             &mut self,
             request: impl tonic::IntoRequest<super::SuspendRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SuspendResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::SuspendResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/SuspendInstance",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/SuspendInstance");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "SuspendInstance"));
@@ -1613,18 +1537,12 @@ pub mod task_hub_sidecar_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::ResumeRequest>,
         ) -> std::result::Result<tonic::Response<super::ResumeResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/ResumeInstance",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/ResumeInstance");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "ResumeInstance"));
@@ -1633,22 +1551,14 @@ pub mod task_hub_sidecar_service_client {
         pub async fn purge_instances(
             &mut self,
             request: impl tonic::IntoRequest<super::PurgeInstancesRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::PurgeInstancesResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::PurgeInstancesResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/PurgeInstances",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/PurgeInstances");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "PurgeInstances"));
@@ -1661,18 +1571,11 @@ pub mod task_hub_sidecar_service_client {
             tonic::Response<tonic::codec::Streaming<super::WorkItem>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/GetWorkItems",
-            );
+            let path = http::uri::PathAndQuery::from_static("/TaskHubSidecarService/GetWorkItems");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "GetWorkItems"));
@@ -1681,27 +1584,19 @@ pub mod task_hub_sidecar_service_client {
         pub async fn complete_activity_task(
             &mut self,
             request: impl tonic::IntoRequest<super::ActivityResponse>,
-        ) -> std::result::Result<
-            tonic::Response<super::CompleteTaskResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::CompleteTaskResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/CompleteActivityTask",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/CompleteActivityTask");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "CompleteActivityTask"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "CompleteActivityTask",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Deprecated: Use CompleteWorkflowTask instead.
@@ -1709,54 +1604,39 @@ pub mod task_hub_sidecar_service_client {
         pub async fn complete_orchestrator_task(
             &mut self,
             request: impl tonic::IntoRequest<super::WorkflowResponse>,
-        ) -> std::result::Result<
-            tonic::Response<super::CompleteTaskResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::CompleteTaskResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/TaskHubSidecarService/CompleteOrchestratorTask",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "CompleteOrchestratorTask"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "CompleteOrchestratorTask",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Completes a workflow work item.
         pub async fn complete_workflow_task(
             &mut self,
             request: impl tonic::IntoRequest<super::WorkflowResponse>,
-        ) -> std::result::Result<
-            tonic::Response<super::CompleteTaskResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::CompleteTaskResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/CompleteWorkflowTask",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/CompleteWorkflowTask");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "CompleteWorkflowTask"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "CompleteWorkflowTask",
+            ));
             self.inner.unary(req, path, codec).await
         }
         /// Rerun a Workflow from a specific event ID of a workflow instance.
@@ -1767,44 +1647,31 @@ pub mod task_hub_sidecar_service_client {
             tonic::Response<super::RerunWorkflowFromEventResponse>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/TaskHubSidecarService/RerunWorkflowFromEvent",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("TaskHubSidecarService", "RerunWorkflowFromEvent"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "RerunWorkflowFromEvent",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn list_instance_i_ds(
             &mut self,
             request: impl tonic::IntoRequest<super::ListInstanceIDsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListInstanceIDsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::ListInstanceIDsResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/ListInstanceIDs",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/ListInstanceIDs");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "ListInstanceIDs"));
@@ -1813,25 +1680,19 @@ pub mod task_hub_sidecar_service_client {
         pub async fn get_instance_history(
             &mut self,
             request: impl tonic::IntoRequest<super::GetInstanceHistoryRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetInstanceHistoryResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetInstanceHistoryResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/TaskHubSidecarService/GetInstanceHistory",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/TaskHubSidecarService/GetInstanceHistory");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("TaskHubSidecarService", "GetInstanceHistory"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "TaskHubSidecarService",
+                "GetInstanceHistory",
+            ));
             self.inner.unary(req, path, codec).await
         }
     }
