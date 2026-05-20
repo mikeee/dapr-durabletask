@@ -5,7 +5,10 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::api::{DurableTaskError, FailureDetails, OrchestrationStatus, RetryPolicy};
+use crate::api::{
+    DurableTaskError, FailureDetails, HistoryPropagationScope, OrchestrationStatus,
+    PropagatedHistory, RetryPolicy,
+};
 use crate::internal::{to_json, to_timestamp};
 use crate::proto;
 
@@ -44,6 +47,9 @@ pub(crate) struct OrchestrationContextInner {
     /// (TaskScheduled + TimerCreated + ChildWorkflowInstanceCreated).
     /// Used to determine whether `is_patched` is called mid-history or at the frontier.
     pub(crate) history_scheduled_count: i32,
+    /// History forwarded from the parent workflow (if any). Populated from
+    /// the `WorkflowRequest.propagated_history` field.
+    pub(crate) propagated_history: Option<PropagatedHistory>,
 }
 
 /// The orchestration context provided to orchestrator functions.
@@ -93,6 +99,7 @@ impl OrchestrationContext {
                 history_patches: std::collections::HashSet::new(),
                 applied_patches: HashMap::new(),
                 history_scheduled_count: 0,
+                propagated_history: None,
             })),
         }
     }
@@ -137,6 +144,19 @@ impl OrchestrationContext {
         crate::internal::from_json(inner.input.as_deref(), inner.max_json_payload_size)
     }
 
+    /// Returns history forwarded from the parent workflow, if the parent
+    /// scheduled this child with a non-`None` history propagation scope.
+    ///
+    /// See [`HistoryPropagationScope`] for the parent-side trade-off between
+    /// `OwnHistory` and `Lineage`.
+    pub fn propagated_history(&self) -> Option<PropagatedHistory> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .propagated_history
+            .clone()
+    }
+
     /// Set a custom status string.
     pub fn set_custom_status(&self, status: impl Into<String>) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -152,7 +172,7 @@ impl OrchestrationContext {
     /// During new execution: creates a `ScheduleTaskAction`.
     pub fn call_activity(&self, name: &str, input: impl Serialize) -> CompletableTask {
         tracing::debug!(activity = %name, "Scheduling activity");
-        self.call_activity_inner(name, input, None)
+        self.call_activity_inner(name, input, None, None)
     }
 
     /// Schedule an activity with an `app_id` for cross-app scenarios.
@@ -163,7 +183,7 @@ impl OrchestrationContext {
         app_id: &str,
     ) -> CompletableTask {
         tracing::debug!(activity = %name, app_id = %app_id, "Scheduling activity with app_id");
-        self.call_activity_inner(name, input, Some(app_id))
+        self.call_activity_inner(name, input, Some(app_id), None)
     }
 
     fn call_activity_inner(
@@ -171,6 +191,7 @@ impl OrchestrationContext {
         name: &str,
         input: impl Serialize,
         app_id: Option<&str>,
+        history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
         let input_json = match to_json(&input) {
             Ok(json) => json,
@@ -184,7 +205,7 @@ impl OrchestrationContext {
                 return task;
             }
         };
-        self.call_activity_raw(name, input_json, app_id)
+        self.call_activity_raw(name, input_json, app_id, history_propagation_scope)
     }
 
     /// Internal: schedule an activity using a pre-serialised JSON input.
@@ -193,6 +214,7 @@ impl OrchestrationContext {
         name: &str,
         input_json: Option<String>,
         app_id: Option<&str>,
+        history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let seq = inner.sequence_number;
@@ -210,6 +232,7 @@ impl OrchestrationContext {
         let router = app_id.map(|id| proto::TaskRouter {
             source_app_id: String::new(),
             target_app_id: Some(id.to_string()),
+            target_app_namespace: None,
         });
         let action = proto::WorkflowAction {
             id: seq,
@@ -221,6 +244,8 @@ impl OrchestrationContext {
                     input: input_json,
                     router,
                     task_execution_id: String::new(),
+                    history_propagation_scope: history_propagation_scope
+                        .map(|s| s.to_proto() as i32),
                 },
             )),
         };
@@ -245,6 +270,7 @@ impl OrchestrationContext {
         };
         let name = name.to_string();
         let app_id = options.app_id.clone();
+        let scope = options.history_propagation_scope;
         let ctx = self.clone();
 
         match options.retry_policy {
@@ -252,12 +278,12 @@ impl OrchestrationContext {
                 let first_attempt_time = ctx.current_utc_datetime();
                 let schedule: Arc<dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync> =
                     Arc::new(move |c: &OrchestrationContext| {
-                        c.call_activity_raw(&name, input_json.clone(), app_id.as_deref())
+                        c.call_activity_raw(&name, input_json.clone(), app_id.as_deref(), scope)
                     });
                 call_with_retry(ctx, schedule, policy, 0, first_attempt_time)
             }
             None => {
-                let task = self.call_activity_raw(&name, input_json, app_id.as_deref());
+                let task = self.call_activity_raw(&name, input_json, app_id.as_deref(), scope);
                 Box::pin(task)
             }
         }
@@ -275,7 +301,7 @@ impl OrchestrationContext {
             sub_instance_id = ?instance_id,
             "Scheduling sub-orchestration"
         );
-        self.call_sub_orchestrator_inner(name, input, instance_id, None)
+        self.call_sub_orchestrator_inner(name, input, instance_id, None, None)
     }
 
     /// Schedule a sub-orchestration targeting a specific Dapr app ID.
@@ -292,7 +318,7 @@ impl OrchestrationContext {
             app_id = %app_id,
             "Scheduling sub-orchestration with app_id"
         );
-        self.call_sub_orchestrator_inner(name, input, instance_id, Some(app_id))
+        self.call_sub_orchestrator_inner(name, input, instance_id, Some(app_id), None)
     }
 
     fn call_sub_orchestrator_inner(
@@ -301,6 +327,7 @@ impl OrchestrationContext {
         input: impl Serialize,
         instance_id: Option<&str>,
         app_id: Option<&str>,
+        history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
         let input_json = match to_json(&input) {
             Ok(json) => json,
@@ -314,7 +341,13 @@ impl OrchestrationContext {
                 return task;
             }
         };
-        self.call_sub_orchestrator_raw(name, input_json, instance_id, app_id)
+        self.call_sub_orchestrator_raw(
+            name,
+            input_json,
+            instance_id,
+            app_id,
+            history_propagation_scope,
+        )
     }
 
     /// Internal: schedule a sub-orchestration using a pre-serialised JSON input.
@@ -324,6 +357,7 @@ impl OrchestrationContext {
         input_json: Option<String>,
         instance_id: Option<&str>,
         app_id: Option<&str>,
+        history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let seq = inner.sequence_number;
@@ -345,6 +379,7 @@ impl OrchestrationContext {
         let router = app_id.map(|id| proto::TaskRouter {
             source_app_id: String::new(),
             target_app_id: Some(id.to_string()),
+            target_app_namespace: None,
         });
 
         let action = proto::WorkflowAction {
@@ -358,6 +393,8 @@ impl OrchestrationContext {
                         version: None,
                         input: input_json,
                         router,
+                        history_propagation_scope: history_propagation_scope
+                            .map(|s| s.to_proto() as i32),
                     },
                 ),
             ),
@@ -387,6 +424,7 @@ impl OrchestrationContext {
         let name = name.to_string();
         let instance_id = options.instance_id.clone();
         let app_id = options.app_id.clone();
+        let scope = options.history_propagation_scope;
         let ctx = self.clone();
 
         match options.retry_policy {
@@ -399,6 +437,7 @@ impl OrchestrationContext {
                             input_json.clone(),
                             instance_id.as_deref(),
                             app_id.as_deref(),
+                            scope,
                         )
                     });
                 call_with_retry(ctx, schedule, policy, 0, first_attempt_time)
@@ -409,6 +448,7 @@ impl OrchestrationContext {
                     input_json,
                     instance_id.as_deref(),
                     app_id.as_deref(),
+                    scope,
                 );
                 Box::pin(task)
             }

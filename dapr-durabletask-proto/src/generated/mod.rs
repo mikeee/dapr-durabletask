@@ -5,6 +5,8 @@ pub struct TaskRouter {
     pub source_app_id: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub target_app_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub target_app_namespace: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowVersion {
@@ -46,6 +48,8 @@ pub struct ParentInstanceInfo {
     pub workflow_instance: ::core::option::Option<WorkflowInstance>,
     #[prost(string, optional, tag = "5")]
     pub app_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "6")]
+    pub app_namespace: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// RerunParentInstanceInfo is used to indicate that this workflow was
 /// started as part of a rerun operation. Contains information about the parent
@@ -100,12 +104,17 @@ pub struct WorkflowState {
     #[prost(map = "string, string", tag = "15")]
     pub tags:
         ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "16")]
+    pub parent_app_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "17")]
+    pub started_at: ::core::option::Option<::prost_types::Timestamp>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum StalledReason {
     PatchMismatch = 0,
     VersionNotAvailable = 1,
+    PayloadSizeExceeded = 2,
 }
 impl StalledReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -116,6 +125,7 @@ impl StalledReason {
         match self {
             Self::PatchMismatch => "PATCH_MISMATCH",
             Self::VersionNotAvailable => "VERSION_NOT_AVAILABLE",
+            Self::PayloadSizeExceeded => "PAYLOAD_SIZE_EXCEEDED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -123,6 +133,7 @@ impl StalledReason {
         match value {
             "PATCH_MISMATCH" => Some(Self::PatchMismatch),
             "VERSION_NOT_AVAILABLE" => Some(Self::VersionNotAvailable),
+            "PAYLOAD_SIZE_EXCEEDED" => Some(Self::PayloadSizeExceeded),
             _ => None,
         }
     }
@@ -170,6 +181,250 @@ impl OrchestrationStatus {
             "ORCHESTRATION_STATUS_PENDING" => Some(Self::Pending),
             "ORCHESTRATION_STATUS_SUSPENDED" => Some(Self::Suspended),
             "ORCHESTRATION_STATUS_STALLED" => Some(Self::Stalled),
+            _ => None,
+        }
+    }
+}
+/// HistoryPropagationScope controls how history is propagated to a child
+/// workflow or activity
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum HistoryPropagationScope {
+    /// No propagation. This is the default for an unset/missing field; the
+    /// child receives no history from the caller.
+    None = 0,
+    /// Propagate the caller's own history events only. The child does
+    /// not see any ancestral history (trust boundary).
+    OwnHistory = 1,
+    /// Propagate the caller's own history events AND the full ancestral
+    /// chain. Any propagated history this workflow received from its
+    /// parent is forwarded to the child.
+    Lineage = 2,
+}
+impl HistoryPropagationScope {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::None => "HISTORY_PROPAGATION_SCOPE_NONE",
+            Self::OwnHistory => "HISTORY_PROPAGATION_SCOPE_OWN_HISTORY",
+            Self::Lineage => "HISTORY_PROPAGATION_SCOPE_LINEAGE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "HISTORY_PROPAGATION_SCOPE_NONE" => Some(Self::None),
+            "HISTORY_PROPAGATION_SCOPE_OWN_HISTORY" => Some(Self::OwnHistory),
+            "HISTORY_PROPAGATION_SCOPE_LINEAGE" => Some(Self::Lineage),
+            _ => None,
+        }
+    }
+}
+/// Inner signed payload for a child workflow completion attestation. The
+/// deterministically serialized form of this message is what the signer
+/// signs over and what receivers verify against; the bytes are produced
+/// once and never re-marshaled.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChildCompletionAttestationPayload {
+    /// Parent workflow instance ID. Binds the attestation to a single parent
+    /// run, preventing replay by other instances of the same parent workflow
+    /// that share a signing key.
+    #[prost(string, tag = "1")]
+    pub parent_instance_id: ::prost::alloc::string::String,
+    /// taskScheduledId from the parent's ChildWorkflowInstanceCreatedEvent.
+    /// Unique within the parent instance; distinguishes multiple invocations
+    /// of the same child workflow.
+    #[prost(int32, tag = "2")]
+    pub parent_task_scheduled_id: i32,
+    /// sha256 commitment to this invocation's input and output. The bytes
+    /// fed into the digest are produced by the canonical byte serialization
+    /// spec at the top of this file — not by any protobuf marshaler — so
+    /// the digest is stable across proto versions, implementations, and
+    /// languages. Use terminalStatus to select the output serialization rule
+    /// (COMPLETED or FAILED).
+    #[prost(bytes = "vec", tag = "3")]
+    pub io_digest: ::prost::alloc::vec::Vec<u8>,
+    /// sha256 of the DER-encoded X.509 certificate chain bytes of the
+    /// signer (leaf first, intermediates concatenated; same byte format
+    /// as the `certificate` field of SigningCertificate). Computed directly
+    /// over the DER bytes rather than any protobuf envelope, so the digest
+    /// is stable across protobuf version changes. The certificate itself
+    /// is carried as a companion field on the enclosing event on first
+    /// delivery and stored once in the receiver's external certificate
+    /// table (ext-sigcert-NNNNNN), looked up by this digest.
+    #[prost(bytes = "vec", tag = "4")]
+    pub signer_cert_digest: ::prost::alloc::vec::Vec<u8>,
+    /// Terminal state of the child workflow at the moment of attestation.
+    /// Signed so that a verifier reading the attestation from propagated
+    /// history can tell whether the child succeeded without relying on the
+    /// enclosing event type (Completed vs Failed), which may not be
+    /// visible or trustworthy when the attestation is inspected in
+    /// isolation.
+    #[prost(enumeration = "TerminalStatus", tag = "5")]
+    pub terminal_status: i32,
+    /// Version of the canonical byte serialization spec used to compute
+    /// ioDigest. See the "Versioning" section of the spec block at the top
+    /// of this file. Verifiers that don't recognize the value reject the
+    /// attestation rather than risk a silent digest mismatch. Current
+    /// value: 1.
+    #[prost(uint32, tag = "6")]
+    pub canonical_spec_version: u32,
+}
+/// Signed wrapper around ChildCompletionAttestationPayload.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChildCompletionAttestation {
+    /// Deterministically serialized form of ChildCompletionAttestationPayload
+    /// produced once by the signer. Opaque bytes thereafter; receivers,
+    /// storage layers, and verifiers never re-marshal.
+    #[prost(bytes = "vec", tag = "1")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    /// Cryptographic signature over sha256(payload) using the private key
+    /// corresponding to the certificate whose digest is in the payload's
+    /// signerCertDigest field. Signature format follows the same rules as
+    /// HistorySignature.signature.
+    #[prost(bytes = "vec", tag = "2")]
+    pub signature: ::prost::alloc::vec::Vec<u8>,
+}
+/// Inner signed payload for an activity completion attestation. Activities
+/// have no signed history chain of their own (unlike child workflows), so
+/// there is no finalSignatureDigest field. Activity identity is the hosting
+/// app's SPIFFE identity; a compromised app can attest only to activities
+/// it hosts, not to activities hosted on other apps.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCompletionAttestationPayload {
+    /// Parent workflow instance ID that scheduled the activity.
+    #[prost(string, tag = "1")]
+    pub parent_instance_id: ::prost::alloc::string::String,
+    /// taskScheduledId from the parent's TaskScheduledEvent. Unique within
+    /// the parent instance.
+    #[prost(int32, tag = "2")]
+    pub parent_task_scheduled_id: i32,
+    /// Activity name from the parent's TaskScheduledEvent. Explicit because
+    /// no separate creation event binds it in the parent's history the way
+    /// ChildWorkflowInstanceCreatedEvent does for child workflows.
+    #[prost(string, tag = "3")]
+    pub activity_name: ::prost::alloc::string::String,
+    /// sha256 commitment to this invocation's input and output. See the
+    /// canonical byte serialization spec at the top of this file. Use
+    /// terminalStatus (ACTIVITY_TERMINAL_STATUS_COMPLETED or \_FAILED) to
+    /// select the output serialization rule.
+    #[prost(bytes = "vec", tag = "4")]
+    pub io_digest: ::prost::alloc::vec::Vec<u8>,
+    /// sha256 of the DER-encoded X.509 certificate chain bytes of the
+    /// activity executor's signer. Same semantics and storage behavior as
+    /// ChildCompletionAttestationPayload.signerCertDigest.
+    #[prost(bytes = "vec", tag = "5")]
+    pub signer_cert_digest: ::prost::alloc::vec::Vec<u8>,
+    /// Terminal state of the activity at the moment of attestation.
+    #[prost(enumeration = "ActivityTerminalStatus", tag = "6")]
+    pub terminal_status: i32,
+    /// Version of the canonical byte serialization spec used to compute
+    /// ioDigest. See the "Versioning" section of the spec block at the top
+    /// of this file. Verifiers that don't recognize the value reject the
+    /// attestation rather than risk a silent digest mismatch. Current
+    /// value: 1.
+    #[prost(uint32, tag = "7")]
+    pub canonical_spec_version: u32,
+}
+/// Signed wrapper around ActivityCompletionAttestationPayload.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCompletionAttestation {
+    /// Deterministically serialized form of
+    /// ActivityCompletionAttestationPayload produced once by the signer.
+    /// Opaque bytes thereafter; receivers, storage layers, and verifiers
+    /// never re-marshal.
+    #[prost(bytes = "vec", tag = "1")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    /// Cryptographic signature over sha256(payload).
+    #[prost(bytes = "vec", tag = "2")]
+    pub signature: ::prost::alloc::vec::Vec<u8>,
+}
+/// A foreign signer's X.509 certificate; one belonging to another workflow
+/// instance or activity executor whose attestations this workflow has
+/// received. Stored once per unique digest and referenced by digest from
+/// any attestation embedded in history. Stored as individual actor state
+/// keys: ext-sigcert-000000, ext-sigcert-000001, etc.
+///
+/// Lifecycle mirrors SigningCertificate (monotonically appended within a
+/// run, cleared on ContinueAsNew and instance purge, tracked by
+/// BackendWorkflowStateMetadata.externalSigningCertificateLength). Dedup
+/// within a run is performed by in-memory digest→index lookup built at
+/// load time.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExternalSigningCertificate {
+    /// sha256 of the DER-encoded X.509 certificate chain bytes (the value
+    /// in `certificate` below). Also the primary lookup key used by
+    /// attestations' signerCertDigest fields. Stored explicitly so
+    /// load-time index construction and post-load integrity checks do not
+    /// have to re-hash every entry.
+    #[prost(bytes = "vec", tag = "1")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+    /// Same byte format as SigningCertificate.certificate: DER-encoded
+    /// X.509 chain, leaf first, intermediates concatenated.
+    #[prost(bytes = "vec", tag = "2")]
+    pub certificate: ::prost::alloc::vec::Vec<u8>,
+}
+/// Terminal state of a child workflow at the moment of attestation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TerminalStatus {
+    Unspecified = 0,
+    Completed = 1,
+    Failed = 2,
+}
+impl TerminalStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TERMINAL_STATUS_UNSPECIFIED",
+            Self::Completed => "TERMINAL_STATUS_COMPLETED",
+            Self::Failed => "TERMINAL_STATUS_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TERMINAL_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "TERMINAL_STATUS_COMPLETED" => Some(Self::Completed),
+            "TERMINAL_STATUS_FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+/// Terminal state of an activity task at the moment of attestation.
+/// Activities have no "terminate" operation, so the space is smaller than
+/// TerminalStatus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityTerminalStatus {
+    Unspecified = 0,
+    Completed = 1,
+    Failed = 2,
+}
+impl ActivityTerminalStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_TERMINAL_STATUS_UNSPECIFIED",
+            Self::Completed => "ACTIVITY_TERMINAL_STATUS_COMPLETED",
+            Self::Failed => "ACTIVITY_TERMINAL_STATUS_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_TERMINAL_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_TERMINAL_STATUS_COMPLETED" => Some(Self::Completed),
+            "ACTIVITY_TERMINAL_STATUS_FAILED" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -228,6 +483,11 @@ pub struct TaskScheduledEvent {
     /// workflow execution as the result of a rerun operation.
     #[prost(message, optional, tag = "6")]
     pub rerun_parent_instance_info: ::core::option::Option<RerunParentInstanceInfo>,
+    /// History propagation scope used when this task was originally scheduled.
+    /// Persisted on the event so rerun can re-issue the task with the same
+    /// scope after the action has been discarded.
+    #[prost(enumeration = "HistoryPropagationScope", optional, tag = "7")]
+    pub history_propagation_scope: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskCompletedEvent {
@@ -237,6 +497,21 @@ pub struct TaskCompletedEvent {
     pub result: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, tag = "3")]
     pub task_execution_id: ::prost::alloc::string::String,
+    /// Attestation signed by the activity executor's SPIFFE identity.
+    /// Present when the activity was executed under a signing-enabled
+    /// configuration. Verified on inbox ingestion against the companion
+    /// signerCertificate and preserved in stored history for future audit
+    /// and forwarding via provenance bundles.
+    #[prost(message, optional, tag = "4")]
+    pub attestation: ::core::option::Option<ActivityCompletionAttestation>,
+    /// Companion: DER-encoded X.509 certificate chain of the executor's
+    /// signing identity (leaf first, intermediates concatenated; same
+    /// format as SigningCertificate.certificate in backend_service.proto).
+    /// Wire-only; stripped by the receiver before the event is written to
+    /// history-NNNNNN. The certificate lives once in ext-sigcert-NNNNNN,
+    /// referenced by attestation payload's signerCertDigest.
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskFailedEvent {
@@ -246,6 +521,12 @@ pub struct TaskFailedEvent {
     pub failure_details: ::core::option::Option<TaskFailureDetails>,
     #[prost(string, tag = "3")]
     pub task_execution_id: ::prost::alloc::string::String,
+    /// See TaskCompletedEvent.attestation.
+    #[prost(message, optional, tag = "4")]
+    pub attestation: ::core::option::Option<ActivityCompletionAttestation>,
+    /// Wire-only companion; see TaskCompletedEvent.signerCertificate.
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildWorkflowInstanceCreatedEvent {
@@ -263,6 +544,11 @@ pub struct ChildWorkflowInstanceCreatedEvent {
     /// workflow execution as the result of a rerun operation.
     #[prost(message, optional, tag = "6")]
     pub rerun_parent_instance_info: ::core::option::Option<RerunParentInstanceInfo>,
+    /// History propagation scope used when this child workflow was originally
+    /// scheduled. Persisted on the event so rerun can re-issue the child with
+    /// the same scope after the action has been discarded.
+    #[prost(enumeration = "HistoryPropagationScope", optional, tag = "7")]
+    pub history_propagation_scope: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildWorkflowInstanceCompletedEvent {
@@ -270,6 +556,21 @@ pub struct ChildWorkflowInstanceCompletedEvent {
     pub task_scheduled_id: i32,
     #[prost(message, optional, tag = "2")]
     pub result: ::core::option::Option<::prost::alloc::string::String>,
+    /// Attestation signed by the completing child workflow's SPIFFE
+    /// identity. Present when the child was executed under a signing-enabled
+    /// configuration. Verified on inbox ingestion against the companion
+    /// signerCertificate and preserved in stored history for future audit
+    /// and forwarding via provenance bundles.
+    #[prost(message, optional, tag = "3")]
+    pub attestation: ::core::option::Option<ChildCompletionAttestation>,
+    /// Companion: DER-encoded X.509 certificate chain of the child's signing
+    /// identity (leaf first, intermediates concatenated; same format as
+    /// SigningCertificate.certificate in backend_service.proto). Wire-only;
+    /// stripped by the receiver before the event is written to
+    /// history-NNNNNN. The certificate lives once in ext-sigcert-NNNNNN,
+    /// referenced by attestation payload's signerCertDigest.
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildWorkflowInstanceFailedEvent {
@@ -277,6 +578,24 @@ pub struct ChildWorkflowInstanceFailedEvent {
     pub task_scheduled_id: i32,
     #[prost(message, optional, tag = "2")]
     pub failure_details: ::core::option::Option<TaskFailureDetails>,
+    /// See ChildWorkflowInstanceCompletedEvent.attestation.
+    #[prost(message, optional, tag = "3")]
+    pub attestation: ::core::option::Option<ChildCompletionAttestation>,
+    /// Wire-only companion; see
+    /// ChildWorkflowInstanceCompletedEvent.signerCertificate.
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// DetachedWorkflowInstanceCreatedEvent records that a running workflow
+/// created a new, detached workflow instance via CreateDetachedWorkflowAction.
+/// The new workflow has no parent linkage (no completion or failure flows
+/// back), so this event only stores a pointer to the spawned instance — the
+/// inputs themselves are consumed directly from the action when scheduling.
+/// Replay matches on instanceId, so it is the same value the action carried.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DetachedWorkflowInstanceCreatedEvent {
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
 }
 /// Indicates the timer was created by a createTimer call with no special origin.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -394,7 +713,7 @@ pub struct HistoryEvent {
     pub router: ::core::option::Option<TaskRouter>,
     #[prost(
         oneof = "history_event::EventType",
-        tags = "3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 31"
+        tags = "3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 31, 32"
     )]
     pub event_type: ::core::option::Option<history_event::EventType>,
 }
@@ -440,7 +759,62 @@ pub mod history_event {
         ExecutionResumed(super::ExecutionResumedEvent),
         #[prost(message, tag = "31")]
         ExecutionStalled(super::ExecutionStalledEvent),
+        #[prost(message, tag = "32")]
+        DetachedWorkflowInstanceCreated(super::DetachedWorkflowInstanceCreatedEvent),
     }
+}
+/// A self-contained range of events produced by a single app, used when
+/// history from multiple workflows is propagated to a downstream workflow
+/// or activity. Each chunk owns the raw event bytes its producer signed;
+/// receivers digest those bytes directly and decode them into typed
+/// HistoryEvents on demand.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PropagatedHistoryChunk {
+    /// Raw deterministic bytes of each HistoryEvent in this chunk, in execution
+    /// order. The producer marshals each event once and signs over these exact
+    /// bytes; receivers digest them directly and never re-marshal, so chunk
+    /// verification is independent of protobuf marshaler-version stability
+    /// across producer and receiver. This mirrors the approach attestations use
+    /// for ioDigest: signed bytes travel verbatim end-to-end. The chunk's
+    /// length is len(rawEvents).
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub raw_events: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, tag = "2")]
+    pub app_id: ::prost::alloc::string::String,
+    /// The workflow instance ID/name that produced the events in this chunk.
+    #[prost(string, tag = "3")]
+    pub instance_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub workflow_name: ::prost::alloc::string::String,
+    /// Raw deterministic bytes of each HistorySignature message produced by the
+    /// chunk's app at dispatch time, covering rawEvents in order. Receivers
+    /// unmarshal these on demand to verify the chain. Raw bytes are required
+    /// because HistorySignature.previousSignatureDigest commits to the exact
+    /// persisted serialization; re-marshaling on the wire would break chain
+    /// linkage. See backend_service.proto: HistorySignature.
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub raw_signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    /// X.509 certificate chains of the chunk app's signing identities,
+    /// DER-concatenated leaf-first then intermediates (same encoding as
+    /// backend_service.proto: SigningCertificate.certificate). Each
+    /// HistorySignature in rawSignatures has a certificateIndex that indexes
+    /// into this list, scoped to the chunk's producer app. Raw bytes here avoid
+    /// a circular import on backend_service.proto's SigningCertificate type.
+    #[prost(bytes = "vec", repeated, tag = "6")]
+    pub signing_cert_chains: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PropagatedHistory {
+    /// The propagation scope that was used to produce this history.
+    #[prost(enumeration = "HistoryPropagationScope", tag = "1")]
+    pub scope: i32,
+    /// Per-app history chunks. Each chunk owns the raw event bytes its producer
+    /// signed (PropagatedHistoryChunk.rawEvents); receivers digest those bytes
+    /// directly and decode them into typed HistoryEvents on demand. Chunks are
+    /// ordered, non-overlapping, and together describe the full propagated
+    /// event sequence.
+    #[prost(message, repeated, tag = "2")]
+    pub chunks: ::prost::alloc::vec::Vec<PropagatedHistoryChunk>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ScheduleTaskAction {
@@ -454,6 +828,9 @@ pub struct ScheduleTaskAction {
     pub router: ::core::option::Option<TaskRouter>,
     #[prost(string, tag = "5")]
     pub task_execution_id: ::prost::alloc::string::String,
+    /// History propagation scope. Absent/SCOPE_NONE = no propagation.
+    #[prost(enumeration = "HistoryPropagationScope", optional, tag = "6")]
+    pub history_propagation_scope: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateChildWorkflowAction {
@@ -466,6 +843,47 @@ pub struct CreateChildWorkflowAction {
     #[prost(message, optional, tag = "4")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "5")]
+    pub router: ::core::option::Option<TaskRouter>,
+    /// History propagation scope. Absent/SCOPE_NONE = no propagation.
+    #[prost(enumeration = "HistoryPropagationScope", optional, tag = "6")]
+    pub history_propagation_scope: ::core::option::Option<i32>,
+}
+/// CreateDetachedWorkflowAction creates a new, detached workflow instance from
+/// a running workflow. Mirrors the fields of CreateInstanceRequest (the client
+/// scheduling API) so the runtime has all the information needed to schedule
+/// the new instance directly from this action. The spawned workflow is fully
+/// decoupled from the caller: no parent pointer is recorded on the new
+/// workflow, no completion is awaited, and no failure propagation flows back.
+/// The creation is recorded once in the caller's history as a
+/// DetachedWorkflowInstanceCreatedEvent referencing the new instance ID.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateDetachedWorkflowAction {
+    /// instanceId is the ID assigned to the new workflow. It is mandatory:
+    /// implementors must set a stable, deterministic ID so that on replay the
+    /// call resolves to the same DetachedWorkflowInstanceCreatedEvent in
+    /// history.
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
+    /// name of the workflow to schedule. Mandatory.
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// The remaining fields mirror the optional inputs of
+    /// CreateInstanceRequest. Wrapper types (StringValue) carry presence via
+    /// the wrapper; bare message fields are explicitly marked optional.
+    #[prost(message, optional, tag = "3")]
+    pub version: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "4")]
+    pub input: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "5")]
+    pub scheduled_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "6")]
+    pub execution_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(map = "string, string", tag = "7")]
+    pub tags:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "8")]
+    pub parent_trace_context: ::core::option::Option<TraceContext>,
+    #[prost(message, optional, tag = "9")]
     pub router: ::core::option::Option<TaskRouter>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -536,7 +954,7 @@ pub struct WorkflowAction {
     pub router: ::core::option::Option<TaskRouter>,
     #[prost(
         oneof = "workflow_action::WorkflowActionType",
-        tags = "2, 3, 4, 5, 6, 7, 10"
+        tags = "2, 3, 4, 5, 6, 7, 10, 11"
     )]
     pub workflow_action_type: ::core::option::Option<workflow_action::WorkflowActionType>,
 }
@@ -558,9 +976,11 @@ pub mod workflow_action {
         TerminateWorkflow(super::TerminateWorkflowAction),
         #[prost(message, tag = "10")]
         WorkflowVersionNotAvailable(super::WorkflowVersionNotAvailableAction),
+        #[prost(message, tag = "11")]
+        CreateDetachedWorkflow(super::CreateDetachedWorkflowAction),
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityRequest {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -576,6 +996,11 @@ pub struct ActivityRequest {
     pub parent_trace_context: ::core::option::Option<TraceContext>,
     #[prost(string, tag = "7")]
     pub task_execution_id: ::prost::alloc::string::String,
+    /// Propagated history from the calling workflow.
+    /// Delivered via the work item stream to the SDK, so that the
+    /// activity function can access it via ctx.
+    #[prost(message, optional, tag = "8")]
+    pub propagated_history: ::core::option::Option<PropagatedHistory>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityResponse {
@@ -604,6 +1029,11 @@ pub struct WorkflowRequest {
     pub requires_history_streaming: bool,
     #[prost(message, optional, tag = "7")]
     pub router: ::core::option::Option<TaskRouter>,
+    /// Propagated history from a parent workflow.
+    /// Delivered via the work item stream to the SDK, so that the
+    /// workflow function can access it via ctx.
+    #[prost(message, optional, tag = "8")]
+    pub propagated_history: ::core::option::Option<PropagatedHistory>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowResponse {

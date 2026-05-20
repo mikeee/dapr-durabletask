@@ -410,6 +410,9 @@ impl TaskHubGrpcWorker {
             request.new_events,
             completion_token.clone(),
             options,
+            request
+                .propagated_history
+                .and_then(crate::api::PropagatedHistory::from_proto),
         )
         .await
         {
@@ -491,6 +494,9 @@ impl TaskHubGrpcWorker {
             request.input,
             request.parent_trace_context.as_ref(),
             completion_token,
+            request
+                .propagated_history
+                .and_then(crate::api::PropagatedHistory::from_proto),
         )
         .await
     }

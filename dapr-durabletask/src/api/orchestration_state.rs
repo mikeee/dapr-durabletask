@@ -111,6 +111,8 @@ mod tests {
             completed_timestamp: None,
             parent_instance_id: None,
             tags: Default::default(),
+            parent_app_id: None,
+            started_at: None,
         }
     }
 

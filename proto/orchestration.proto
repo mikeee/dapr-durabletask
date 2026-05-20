@@ -13,6 +13,7 @@ import "google/protobuf/wrappers.proto";
 enum StalledReason {
     PATCH_MISMATCH = 0;
     VERSION_NOT_AVAILABLE = 1;
+    PAYLOAD_SIZE_EXCEEDED = 2;
 }
 
 enum OrchestrationStatus {
@@ -30,6 +31,7 @@ enum OrchestrationStatus {
 message TaskRouter {
     string sourceAppID = 1;
     optional string targetAppID = 2;
+    optional string targetAppNamespace = 3;
 }
 
 message WorkflowVersion {
@@ -58,6 +60,7 @@ message ParentInstanceInfo {
     google.protobuf.StringValue version = 3;
     WorkflowInstance workflowInstance = 4;
     optional string appID = 5;
+    optional string appNamespace = 6;
 }
 
 // RerunParentInstanceInfo is used to indicate that this workflow was
@@ -73,6 +76,21 @@ message TraceContext {
     string traceParent = 1;
     string spanID = 2 [deprecated=true];
     google.protobuf.StringValue traceState = 3;
+}
+
+// HistoryPropagationScope controls how history is propagated to a child
+// workflow or activity
+enum HistoryPropagationScope {
+    // No propagation. This is the default for an unset/missing field; the
+    // child receives no history from the caller.
+    HISTORY_PROPAGATION_SCOPE_NONE = 0;
+    // Propagate the caller's own history events only. The child does
+    // not see any ancestral history (trust boundary).
+    HISTORY_PROPAGATION_SCOPE_OWN_HISTORY = 1;
+    // Propagate the caller's own history events AND the full ancestral
+    // chain. Any propagated history this workflow received from its
+    // parent is forwarded to the child.
+    HISTORY_PROPAGATION_SCOPE_LINEAGE = 2;
 }
 
 message WorkflowState {
@@ -91,4 +109,7 @@ message WorkflowState {
     google.protobuf.Timestamp completedTimestamp = 13;
     google.protobuf.StringValue parentInstanceId = 14;
     map<string, string> tags = 15;
+    google.protobuf.StringValue parentAppId = 16;
+    optional google.protobuf.Timestamp startedAt = 17;
+
 }

@@ -1,4 +1,4 @@
-use crate::api::RetryPolicy;
+use crate::api::{HistoryPropagationScope, RetryPolicy};
 
 /// Options for scheduling an activity call from an orchestrator.
 #[derive(Default, Clone)]
@@ -7,6 +7,10 @@ pub struct ActivityOptions {
     pub app_id: Option<String>,
     /// Retry policy to apply when the activity fails.
     pub retry_policy: Option<RetryPolicy>,
+    /// Forward the calling workflow's history to the activity. See
+    /// [`HistoryPropagationScope`] for the trade-off between
+    /// `OwnHistory` (caller only) and `Lineage` (caller + ancestors).
+    pub history_propagation_scope: Option<HistoryPropagationScope>,
 }
 
 impl ActivityOptions {
@@ -23,6 +27,13 @@ impl ActivityOptions {
         self.retry_policy = Some(policy);
         self
     }
+
+    /// Forward the calling workflow's history to the activity under the given
+    /// scope.
+    pub fn with_history_propagation(mut self, scope: HistoryPropagationScope) -> Self {
+        self.history_propagation_scope = Some(scope);
+        self
+    }
 }
 
 /// Options for scheduling a sub-orchestration call from an orchestrator.
@@ -35,6 +46,8 @@ pub struct SubOrchestratorOptions {
     pub app_id: Option<String>,
     /// Retry policy to apply when the sub-orchestration fails.
     pub retry_policy: Option<RetryPolicy>,
+    /// Forward the calling workflow's history to the child workflow.
+    pub history_propagation_scope: Option<HistoryPropagationScope>,
 }
 
 impl SubOrchestratorOptions {
@@ -54,6 +67,13 @@ impl SubOrchestratorOptions {
 
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Forward the calling workflow's history to the child workflow under the
+    /// given scope.
+    pub fn with_history_propagation(mut self, scope: HistoryPropagationScope) -> Self {
+        self.history_propagation_scope = Some(scope);
         self
     }
 }
