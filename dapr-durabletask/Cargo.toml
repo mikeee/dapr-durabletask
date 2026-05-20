@@ -32,7 +32,7 @@ serde_json = "1.0.149"
 tracing = "0.1.44"
 
 # OpenTelemetry (optional)
-opentelemetry = { version = "0.31.0", optional = true }
+opentelemetry = { version = "0.32.0", optional = true }
 
 # Utilities
 thiserror = "2.0.18"
@@ -43,8 +43,8 @@ futures = "0.3.32"
 [dev-dependencies]
 tracing-subscriber = "0.3.23"
 libc = "0.2.183"
-opentelemetry = "0.31.0"
-opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
 
 [[example]]
 name = "activity_sequence"
