@@ -1,0 +1,85 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  publish-dry:
+    name: Publish Test (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - dapr-durabletask-proto
+          - dapr-durabletask
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: cachix/install-nix-action@96951a368ba55167b55f1c916f7d416bac6505fe # v31
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: cargo publish --dry-run - ${{ matrix.crate }}
+        run: "nix develop .#stable --command bash -c 'cargo publish -p ${{ matrix.crate }} --dry-run'"
+
+  publish:
+    name: Publish (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [publish-dry]
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        crate:
+          - dapr-durabletask-proto
+          - dapr-durabletask
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: cachix/install-nix-action@96951a368ba55167b55f1c916f7d416bac6505fe # v31
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Mask CARGO_TOKEN
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: echo "::add-mask::${CARGO_TOKEN}"
+
+      - name: cargo publish - ${{ matrix.crate }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: "nix develop .#stable --command bash -c 'cargo publish -p ${{ matrix.crate }}'"
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --verify-tag
