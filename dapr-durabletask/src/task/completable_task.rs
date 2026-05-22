@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -17,6 +18,12 @@ pub enum TaskResult {
 struct CompletableTaskInner {
     result: Option<TaskResult>,
     waker: Option<Waker>,
+    /// `true` if the result came from history replay, `false` if from a
+    /// newly-arrived event. Stand-alone tasks default to `true` so they
+    /// never flip the owning context's replay flag.
+    completed_during_replay: bool,
+    /// Shared `is_replaying` flag of the owning orchestration context, if any.
+    replay_handle: Option<Arc<AtomicBool>>,
 }
 
 /// A task that can be completed by the orchestration executor.
@@ -35,14 +42,30 @@ impl CompletableTask {
             inner: Arc::new(Mutex::new(CompletableTaskInner {
                 result: None,
                 waker: None,
+                completed_during_replay: true,
+                replay_handle: None,
             })),
         }
     }
 
+    /// Attach the owning context's shared `is_replaying` flag. The task
+    /// clears it on resolution when its result came from a new event.
+    pub(crate) fn set_replay_handle(&self, handle: Arc<AtomicBool>) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.replay_handle = Some(handle);
+    }
+
     /// Complete the task with a successful result.
     pub fn complete(&self, result: Option<String>) {
+        self.complete_with_phase(result, true);
+    }
+
+    /// Complete the task, tagging whether the value came from history replay
+    /// or from a newly-arrived event.
+    pub(crate) fn complete_with_phase(&self, result: Option<String>, during_replay: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.result = Some(TaskResult::Completed(result));
+        inner.completed_during_replay = during_replay;
         if let Some(waker) = inner.waker.take() {
             waker.wake();
         }
@@ -50,8 +73,15 @@ impl CompletableTask {
 
     /// Fail the task with failure details.
     pub fn fail(&self, details: FailureDetails) {
+        self.fail_with_phase(details, true);
+    }
+
+    /// Fail the task, tagging whether the failure came from history replay
+    /// or from a newly-arrived event.
+    pub(crate) fn fail_with_phase(&self, details: FailureDetails, during_replay: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.result = Some(TaskResult::Failed(details));
+        inner.completed_during_replay = during_replay;
         if let Some(waker) = inner.waker.take() {
             waker.wake();
         }
@@ -88,11 +118,27 @@ impl Future for CompletableTask {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match &inner.result {
-            Some(TaskResult::Completed(value)) => Poll::Ready(Ok(value.clone())),
-            Some(TaskResult::Failed(details)) => Poll::Ready(Err(DurableTaskError::TaskFailed {
-                message: details.message.clone(),
-                failure_details: Some(details.clone()),
-            })),
+            Some(TaskResult::Completed(value)) => {
+                let value = value.clone();
+                if !inner.completed_during_replay {
+                    if let Some(handle) = inner.replay_handle.as_ref() {
+                        handle.store(false, Ordering::Release);
+                    }
+                }
+                Poll::Ready(Ok(value))
+            }
+            Some(TaskResult::Failed(details)) => {
+                let details = details.clone();
+                if !inner.completed_during_replay {
+                    if let Some(handle) = inner.replay_handle.as_ref() {
+                        handle.store(false, Ordering::Release);
+                    }
+                }
+                Poll::Ready(Err(DurableTaskError::TaskFailed {
+                    message: details.message.clone(),
+                    failure_details: Some(details),
+                }))
+            }
             None => {
                 inner.waker = Some(cx.waker().clone());
                 Poll::Pending
