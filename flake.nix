@@ -58,9 +58,12 @@
           ];
 
           shellHook = ''
-            # Build the durabletask-go sidecar into tmp/ if not already present
+            # Build the durabletask-go sidecar into tmp/ if not already present.
+            # Set DURABLETASK_SKIP_SIDECAR=1 to skip.
             SIDECAR_BIN="$PWD/tmp/durabletask-sidecar"
-            if [ ! -f "$SIDECAR_BIN" ]; then
+            if [ "''${DURABLETASK_SKIP_SIDECAR:-}" = "1" ]; then
+              echo "Skipping durabletask-go sidecar build (DURABLETASK_SKIP_SIDECAR=1)"
+            elif [ ! -f "$SIDECAR_BIN" ]; then
               echo "Building durabletask-go sidecar..."
               mkdir -p "$PWD/tmp"
               GOPATH="$PWD/tmp/go" go install github.com/dapr/durabletask-go@latest

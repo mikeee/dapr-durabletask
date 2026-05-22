@@ -18,8 +18,5 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build sidecar
-        run: "nix develop .#stable --command bash -c 'echo \"sidecar ready: $DURABLETASK_SIDECAR_BIN\"'"
-
       - name: Run perf tests
         run: "nix develop .#stable --command bash -c 'cargo nextest run --workspace --all-features -E \"test(perf_)\" --run-ignored all'"

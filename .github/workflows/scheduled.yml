@@ -5,6 +5,10 @@ on:
     - cron: "0 6 * * *" # daily at 06:00 UTC
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   proto-drift:
     name: Proto drift check
@@ -47,11 +51,21 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: ${{ runner.os }}-${{ matrix.toolchain }}
+          key: ${{ matrix.toolchain }}
+          cache-on-failure: true
+
       - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
         with:
           nix_path: nixpkgs=channel:nixpkgs-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
       - name: ${{ matrix.name }}
+        env:
+          DURABLETASK_SKIP_SIDECAR: ${{ matrix.name == 'Test' && '0' || '1' }}
         run: "nix develop .#${{ matrix.toolchain }} --command bash -c '${{ matrix.command }}'"
