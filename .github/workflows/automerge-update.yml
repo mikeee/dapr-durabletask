@@ -1,0 +1,90 @@
+name: Auto-update auto-merge PRs
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Update PRs with auto-merge enabled
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.REPO_APP_ID }}
+          private-key: ${{ secrets.REPO_APP_PRIVATE_KEY }}
+
+      - name: Mask App token
+        run: echo "::add-mask::${{ steps.app-token.outputs.token }}"
+
+      - name: Update PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const query = `
+              query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequests(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                    nodes {
+                      number
+                      title
+                      autoMergeRequest { enabledAt }
+                      mergeable
+                      isDraft
+                      baseRefName
+                      headRefName
+                      headRepositoryOwner { login }
+                      headRepository { name }
+                    }
+                  }
+                }
+              }
+            `;
+            const { repository } = await github.graphql(query, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const prs = repository.pullRequests.nodes.filter(pr =>
+              pr.autoMergeRequest && !pr.isDraft
+            );
+
+            core.info(`Found ${prs.length} open PR(s) with auto-merge enabled`);
+
+            for (const pr of prs) {
+              const fromForked =
+                pr.headRepositoryOwner?.login !== context.repo.owner ||
+                pr.headRepository?.name !== context.repo.repo;
+              if (fromForked) {
+                core.info(`#${pr.number}: skipping (fork)`);
+                continue;
+              }
+              if (pr.mergeable === 'CONFLICTING') {
+                core.info(`#${pr.number}: skipping (conflicts with base)`);
+                continue;
+              }
+              try {
+                await github.rest.pulls.updateBranch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                });
+                core.info(`#${pr.number}: update-branch requested`);
+              } catch (err) {
+                if (err.status === 422) {
+                  core.info(`#${pr.number}: already up to date`);
+                } else {
+                  core.warning(`#${pr.number}: update failed: ${err.message}`);
+                }
+              }
+            }
