@@ -18,7 +18,11 @@ pub struct TaskHubGrpcClient {
 /// Build a tonic [`Channel`] from the host address and client options,
 /// applying TLS, keepalive, connect timeout, and message-size limits.
 async fn build_channel(host_address: &str, options: &ClientOptions) -> Result<Channel> {
+    const USER_AGENT: &str = concat!("dapr-durabletask/rust/", env!("CARGO_PKG_VERSION"));
+
     let mut builder = Channel::from_shared(host_address.to_string())
+        .map_err(|e| DurableTaskError::Other(e.to_string()))?
+        .user_agent(USER_AGENT)
         .map_err(|e| DurableTaskError::Other(e.to_string()))?;
 
     if let Some(tls) = &options.tls {
