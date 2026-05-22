@@ -170,8 +170,12 @@ impl TaskHubGrpcWorker {
     }
 
     async fn connect(address: &str) -> crate::api::Result<Channel> {
+        const USER_AGENT: &str = concat!("dapr-durabletask/rust/", env!("CARGO_PKG_VERSION"));
+
         Channel::from_shared(address.to_string())
             .map_err(|e| DurableTaskError::Other(format!("Invalid address: {}", e)))?
+            .user_agent(USER_AGENT)
+            .map_err(|e| DurableTaskError::Other(format!("Invalid user agent: {}", e)))?
             .connect()
             .await
             .map_err(|e| DurableTaskError::Other(format!("Connection failed: {}", e)))

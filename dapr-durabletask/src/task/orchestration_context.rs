@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
@@ -19,7 +20,7 @@ use super::options::{ActivityOptions, SubOrchestratorOptions};
 pub(crate) struct OrchestrationContextInner {
     pub(crate) instance_id: String,
     pub(crate) current_utc_datetime: chrono::DateTime<chrono::Utc>,
-    pub(crate) is_replaying: bool,
+    pub(crate) is_replaying: Arc<AtomicBool>,
     pub(crate) is_complete: bool,
     pub(crate) input: Option<String>,
     pub(crate) name: String,
@@ -27,7 +28,9 @@ pub(crate) struct OrchestrationContextInner {
     pub(crate) sequence_number: i32,
     pub(crate) pending_tasks: HashMap<i32, CompletableTask>,
     pub(crate) pending_event_tasks: HashMap<String, Vec<CompletableTask>>,
-    pub(crate) buffered_events: HashMap<String, Vec<Option<String>>>,
+    /// Events buffered while no waiter exists. The `bool` records whether
+    /// the originating `EventRaised` event was applied during replay.
+    pub(crate) buffered_events: HashMap<String, Vec<(Option<String>, bool)>>,
     pub(crate) pending_actions: Vec<proto::WorkflowAction>,
     pub(crate) completion_status: Option<OrchestrationStatus>,
     pub(crate) completion_result: Option<String>,
@@ -76,7 +79,7 @@ impl OrchestrationContext {
             inner: Arc::new(Mutex::new(OrchestrationContextInner {
                 instance_id,
                 current_utc_datetime,
-                is_replaying,
+                is_replaying: Arc::new(AtomicBool::new(is_replaying)),
                 is_complete: false,
                 input,
                 name,
@@ -127,6 +130,7 @@ impl OrchestrationContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_replaying
+            .load(Ordering::Acquire)
     }
 
     /// Get the orchestration name.
@@ -227,6 +231,7 @@ impl OrchestrationContext {
         }
 
         let task = CompletableTask::new();
+        task.set_replay_handle(inner.is_replaying.clone());
         inner.pending_tasks.insert(seq, task.clone());
 
         let router = app_id.map(|id| proto::TaskRouter {
@@ -370,6 +375,7 @@ impl OrchestrationContext {
         }
 
         let task = CompletableTask::new();
+        task.set_replay_handle(inner.is_replaying.clone());
         inner.pending_tasks.insert(seq, task.clone());
 
         let sub_instance_id = instance_id
@@ -469,6 +475,7 @@ impl OrchestrationContext {
         }
 
         let task = CompletableTask::new();
+        task.set_replay_handle(inner.is_replaying.clone());
         inner.pending_tasks.insert(seq, task.clone());
 
         let fire_at = inner.current_utc_datetime
@@ -499,14 +506,16 @@ impl OrchestrationContext {
 
         if let Some(events) = inner.buffered_events.get_mut(&event_name) {
             if !events.is_empty() {
-                let data = events.remove(0);
+                let (data, during_replay) = events.remove(0);
                 let task = CompletableTask::new();
-                task.complete(data);
+                task.set_replay_handle(inner.is_replaying.clone());
+                task.complete_with_phase(data, during_replay);
                 return task;
             }
         }
 
         let task = CompletableTask::new();
+        task.set_replay_handle(inner.is_replaying.clone());
         let max_pending = inner.max_pending_tasks_per_name;
         let pending = inner.pending_event_tasks.entry(event_name).or_default();
         if pending.len() >= max_pending {
@@ -795,7 +804,7 @@ mod tests {
                 .buffered_events
                 .entry("approval".to_string())
                 .or_default()
-                .push(Some("\"yes\"".to_string()));
+                .push((Some("\"yes\"".to_string()), true));
         }
 
         let task = ctx.wait_for_external_event("APPROVAL"); // case-insensitive
