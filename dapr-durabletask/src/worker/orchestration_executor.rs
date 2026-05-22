@@ -8,7 +8,6 @@ use crate::internal::from_timestamp;
 use crate::proto;
 use crate::proto::history_event::EventType;
 use crate::task::OrchestrationContext;
-use crate::task::completable_task::CompletableTask;
 use crate::task::orchestration_context::OrchestrationContextInner;
 
 use super::options::WorkerOptions;
@@ -276,10 +275,7 @@ impl OrchestrationExecutor {
         // Get-or-insert a pending task at `seq`, ensuring placeholders
         // inherit the shared replay flag.
         let pending_task = |inner: &mut OrchestrationContextInner, seq: i32| {
-            let task = inner
-                .pending_tasks
-                .entry(seq)
-                .or_insert_with(CompletableTask::new);
+            let task = inner.pending_tasks.entry(seq).or_default();
             task.set_replay_handle(replay_handle.clone());
             task.clone()
         };
