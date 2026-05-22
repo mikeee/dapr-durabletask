@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use futures::FutureExt;
@@ -7,6 +8,7 @@ use crate::internal::from_timestamp;
 use crate::proto;
 use crate::proto::history_event::EventType;
 use crate::task::OrchestrationContext;
+use crate::task::completable_task::CompletableTask;
 use crate::task::orchestration_context::OrchestrationContextInner;
 
 use super::options::WorkerOptions;
@@ -59,11 +61,16 @@ impl OrchestrationExecutor {
         }
 
         // Process all history events under a single lock acquisition.
-        // Previously each event locked/unlocked individually — O(N) lock ops
-        // for N events. This reduces it to O(1).
+        //
+        // Completions applied while draining old events are tagged
+        // "during replay"; those applied from new events are tagged "new".
+        // `CompletableTask::poll` then clears the shared `is_replaying`
+        // flag the first time the orchestrator awaits a "new" completion —
+        // the replay frontier.
+        let initially_replaying = !old_events.is_empty();
         {
             let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.is_replaying = true;
+            inner.is_replaying.store(true, Ordering::Release);
             tracing::debug!(
                 instance_id = %instance_id,
                 count = old_events.len(),
@@ -78,7 +85,7 @@ impl OrchestrationExecutor {
                 );
             }
 
-            inner.is_replaying = false;
+            inner.is_replaying.store(false, Ordering::Release);
             tracing::debug!(
                 instance_id = %instance_id,
                 count = new_events.len(),
@@ -92,6 +99,12 @@ impl OrchestrationExecutor {
                     options.max_identifier_length,
                 );
             }
+
+            // Brand-new executions run at the frontier from the first poll;
+            // re-runs start in replay and clear the flag as awaits resolve.
+            inner
+                .is_replaying
+                .store(initially_replaying, Ordering::Release);
         }
 
         // Start an OTel orchestration span
@@ -258,6 +271,19 @@ impl OrchestrationExecutor {
             None => return,
         };
 
+        let during_replay = inner.is_replaying.load(Ordering::Acquire);
+        let replay_handle = inner.is_replaying.clone();
+        // Get-or-insert a pending task at `seq`, ensuring placeholders
+        // inherit the shared replay flag.
+        let pending_task = |inner: &mut OrchestrationContextInner, seq: i32| {
+            let task = inner
+                .pending_tasks
+                .entry(seq)
+                .or_insert_with(CompletableTask::new);
+            task.set_replay_handle(replay_handle.clone());
+            task.clone()
+        };
+
         match event_type {
             EventType::WorkflowStarted(ws) => {
                 if let Some(ts) = &event.timestamp {
@@ -287,7 +313,7 @@ impl OrchestrationExecutor {
                     task_id = seq,
                     "Task completed"
                 );
-                let task = inner.pending_tasks.entry(seq).or_default();
+                let task = pending_task(inner, seq);
                 if task.is_complete() {
                     tracing::debug!(
                         instance_id = %instance_id,
@@ -296,7 +322,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                task.complete(e.result.clone());
+                task.complete_with_phase(e.result.clone(), during_replay);
             }
             EventType::TaskFailed(e) => {
                 let seq = e.task_scheduled_id;
@@ -315,7 +341,7 @@ impl OrchestrationExecutor {
                     error = %details.message,
                     "Task failed"
                 );
-                let task = inner.pending_tasks.entry(seq).or_default();
+                let task = pending_task(inner, seq);
                 if task.is_complete() {
                     tracing::debug!(
                         instance_id = %instance_id,
@@ -324,7 +350,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                task.fail(details);
+                task.fail_with_phase(details, during_replay);
             }
             EventType::TaskScheduled(_)
             | EventType::TimerCreated(_)
@@ -334,7 +360,7 @@ impl OrchestrationExecutor {
             EventType::TimerFired(e) => {
                 let seq = e.timer_id;
                 tracing::debug!(instance_id = %instance_id, timer_id = seq, "Timer fired");
-                let task = inner.pending_tasks.entry(seq).or_default();
+                let task = pending_task(inner, seq);
                 if task.is_complete() {
                     tracing::debug!(
                         instance_id = %instance_id,
@@ -343,7 +369,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                task.complete(None);
+                task.complete_with_phase(None, during_replay);
             }
             EventType::ChildWorkflowInstanceCompleted(e) => {
                 let seq = e.task_scheduled_id;
@@ -352,7 +378,7 @@ impl OrchestrationExecutor {
                     task_id = seq,
                     "Child workflow completed"
                 );
-                let task = inner.pending_tasks.entry(seq).or_default();
+                let task = pending_task(inner, seq);
                 if task.is_complete() {
                     tracing::debug!(
                         instance_id = %instance_id,
@@ -361,7 +387,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                task.complete(e.result.clone());
+                task.complete_with_phase(e.result.clone(), during_replay);
             }
             EventType::ChildWorkflowInstanceFailed(e) => {
                 let seq = e.task_scheduled_id;
@@ -380,7 +406,7 @@ impl OrchestrationExecutor {
                     error = %details.message,
                     "Child workflow failed"
                 );
-                let task = inner.pending_tasks.entry(seq).or_default();
+                let task = pending_task(inner, seq);
                 if task.is_complete() {
                     tracing::debug!(
                         instance_id = %instance_id,
@@ -389,7 +415,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                task.fail(details);
+                task.fail_with_phase(details, during_replay);
             }
             EventType::EventRaised(e) => {
                 if let Err(err) = crate::internal::validate_identifier(
@@ -423,7 +449,7 @@ impl OrchestrationExecutor {
                             );
                             return;
                         }
-                        task.complete(e.input.clone());
+                        task.complete_with_phase(e.input.clone(), during_replay);
                         return;
                     }
                 }
@@ -449,7 +475,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                events.push(e.input.clone());
+                events.push((e.input.clone(), during_replay));
             }
             EventType::ExecutionSuspended(_) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration suspended");
@@ -490,7 +516,7 @@ impl OrchestrationExecutor {
             let mut carryover_events = Vec::new();
             if inner.save_events_on_continue {
                 for (name, events) in &inner.buffered_events {
-                    for input in events {
+                    for (input, _during_replay) in events {
                         carryover_events.push(proto::HistoryEvent {
                             event_id: -1,
                             timestamp: None,
