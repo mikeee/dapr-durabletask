@@ -60,7 +60,7 @@ mod tests {
         let mut fut = when_any(vec![t1, t2]);
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(idx)) => assert_eq!(idx, 0),
-            other => panic!("expected Ready(Ok(0)), got {:?}", other),
+            other => panic!("expected Ready(Ok(0)), got {other:?}"),
         }
     }
 
@@ -75,7 +75,7 @@ mod tests {
         let mut fut = when_any(vec![t1, t2]);
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(idx)) => assert_eq!(idx, 1),
-            other => panic!("expected Ready(Ok(1)), got {:?}", other),
+            other => panic!("expected Ready(Ok(1)), got {other:?}"),
         }
     }
 
@@ -92,7 +92,7 @@ mod tests {
         t1.complete(None);
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(idx)) => assert_eq!(idx, 0),
-            other => panic!("expected Ready(Ok(0)), got {:?}", other),
+            other => panic!("expected Ready(Ok(0)), got {other:?}"),
         }
     }
 
@@ -111,7 +111,7 @@ mod tests {
         let mut fut = when_any(vec![t1, t2]);
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(idx)) => assert_eq!(idx, 1),
-            other => panic!("expected Ready(Ok(1)), got {:?}", other),
+            other => panic!("expected Ready(Ok(1)), got {other:?}"),
         }
     }
 }

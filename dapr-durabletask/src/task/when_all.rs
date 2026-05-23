@@ -80,7 +80,7 @@ mod tests {
         let mut fut = when_all(vec![]);
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(results)) => assert!(results.is_empty()),
-            other => panic!("expected Ready(Ok([])), got {:?}", other),
+            other => panic!("expected Ready(Ok([])), got {other:?}"),
         }
     }
 
@@ -100,7 +100,7 @@ mod tests {
                 assert_eq!(results[0], Some("1".to_string()));
                 assert_eq!(results[1], Some("2".to_string()));
             }
-            other => panic!("expected Ready(Ok), got {:?}", other),
+            other => panic!("expected Ready(Ok), got {other:?}"),
         }
     }
 
@@ -118,7 +118,7 @@ mod tests {
         t2.complete(Some("2".to_string()));
         match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(Ok(results)) => assert_eq!(results.len(), 2),
-            other => panic!("expected Ready(Ok), got {:?}", other),
+            other => panic!("expected Ready(Ok), got {other:?}"),
         }
     }
 
@@ -140,7 +140,7 @@ mod tests {
             Poll::Ready(Err(DurableTaskError::TaskFailed { message, .. })) => {
                 assert_eq!(message, "boom");
             }
-            other => panic!("expected Ready(Err(TaskFailed)), got {:?}", other),
+            other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
         }
     }
 }

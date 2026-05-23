@@ -224,10 +224,10 @@ impl OrchestrationContext {
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
-        if let Some(existing) = inner.pending_tasks.get(&seq) {
-            if existing.is_complete() {
-                return existing.clone();
-            }
+        if let Some(existing) = inner.pending_tasks.get(&seq)
+            && existing.is_complete()
+        {
+            return existing.clone();
         }
 
         let task = CompletableTask::new();
@@ -368,10 +368,10 @@ impl OrchestrationContext {
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
-        if let Some(existing) = inner.pending_tasks.get(&seq) {
-            if existing.is_complete() {
-                return existing.clone();
-            }
+        if let Some(existing) = inner.pending_tasks.get(&seq)
+            && existing.is_complete()
+        {
+            return existing.clone();
         }
 
         let task = CompletableTask::new();
@@ -468,10 +468,10 @@ impl OrchestrationContext {
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
-        if let Some(existing) = inner.pending_tasks.get(&seq) {
-            if existing.is_complete() {
-                return existing.clone();
-            }
+        if let Some(existing) = inner.pending_tasks.get(&seq)
+            && existing.is_complete()
+        {
+            return existing.clone();
         }
 
         let task = CompletableTask::new();
@@ -504,14 +504,14 @@ impl OrchestrationContext {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let event_name = name.to_lowercase();
 
-        if let Some(events) = inner.buffered_events.get_mut(&event_name) {
-            if !events.is_empty() {
-                let (data, during_replay) = events.remove(0);
-                let task = CompletableTask::new();
-                task.set_replay_handle(inner.is_replaying.clone());
-                task.complete_with_phase(data, during_replay);
-                return task;
-            }
+        if let Some(events) = inner.buffered_events.get_mut(&event_name)
+            && !events.is_empty()
+        {
+            let (data, during_replay) = events.remove(0);
+            let task = CompletableTask::new();
+            task.set_replay_handle(inner.is_replaying.clone());
+            task.complete_with_phase(data, during_replay);
+            return task;
         }
 
         let task = CompletableTask::new();
@@ -588,10 +588,10 @@ fn compute_retry_delay(
     details: &FailureDetails,
 ) -> Option<std::time::Duration> {
     // Check custom predicate.
-    if let Some(ref handle) = policy.handle {
-        if !handle(details) {
-            return None;
-        }
+    if let Some(ref handle) = policy.handle
+        && !handle(details)
+    {
+        return None;
     }
 
     // Check overall retry timeout.

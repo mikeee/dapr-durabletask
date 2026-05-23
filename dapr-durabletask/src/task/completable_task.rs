@@ -120,19 +120,19 @@ impl Future for CompletableTask {
         match &inner.result {
             Some(TaskResult::Completed(value)) => {
                 let value = value.clone();
-                if !inner.completed_during_replay {
-                    if let Some(handle) = inner.replay_handle.as_ref() {
-                        handle.store(false, Ordering::Release);
-                    }
+                if !inner.completed_during_replay
+                    && let Some(handle) = inner.replay_handle.as_ref()
+                {
+                    handle.store(false, Ordering::Release);
                 }
                 Poll::Ready(Ok(value))
             }
             Some(TaskResult::Failed(details)) => {
                 let details = details.clone();
-                if !inner.completed_during_replay {
-                    if let Some(handle) = inner.replay_handle.as_ref() {
-                        handle.store(false, Ordering::Release);
-                    }
+                if !inner.completed_during_replay
+                    && let Some(handle) = inner.replay_handle.as_ref()
+                {
+                    handle.store(false, Ordering::Release);
                 }
                 Poll::Ready(Err(DurableTaskError::TaskFailed {
                     message: details.message.clone(),
@@ -203,7 +203,7 @@ mod tests {
         let mut t2 = task.clone();
         match Pin::new(&mut t2).poll(&mut cx) {
             Poll::Ready(Ok(v)) => assert_eq!(v, Some("\"hello\"".to_string())),
-            other => panic!("expected Ready(Ok), got {:?}", other),
+            other => panic!("expected Ready(Ok), got {other:?}"),
         }
     }
 
@@ -224,7 +224,7 @@ mod tests {
             Poll::Ready(Err(DurableTaskError::TaskFailed { message, .. })) => {
                 assert_eq!(message, "oops");
             }
-            other => panic!("expected Ready(Err(TaskFailed)), got {:?}", other),
+            other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
         }
     }
 

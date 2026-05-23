@@ -173,12 +173,12 @@ impl TaskHubGrpcWorker {
         const USER_AGENT: &str = concat!("dapr-durabletask/rust/", env!("CARGO_PKG_VERSION"));
 
         Channel::from_shared(address.to_string())
-            .map_err(|e| DurableTaskError::Other(format!("Invalid address: {}", e)))?
+            .map_err(|e| DurableTaskError::Other(format!("Invalid address: {e}")))?
             .user_agent(USER_AGENT)
-            .map_err(|e| DurableTaskError::Other(format!("Invalid user agent: {}", e)))?
+            .map_err(|e| DurableTaskError::Other(format!("Invalid user agent: {e}")))?
             .connect()
             .await
-            .map_err(|e| DurableTaskError::Other(format!("Connection failed: {}", e)))
+            .map_err(|e| DurableTaskError::Other(format!("Connection failed: {e}")))
     }
 
     async fn run_work_loop(
@@ -401,7 +401,7 @@ impl TaskHubGrpcWorker {
                 );
                 return build_error_response(
                     &instance_id,
-                    &format!("Orchestrator '{}' not registered", name),
+                    &format!("Orchestrator '{name}' not registered"),
                     completion_token,
                 );
             }

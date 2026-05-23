@@ -129,10 +129,10 @@ impl<'a> BackoffIter<'a> {
 
     /// Returns the next delay, or `None` if `max_attempts` has been reached.
     pub(crate) fn next_delay(&mut self) -> Option<Duration> {
-        if let Some(max) = self.policy.max_attempts {
-            if self.attempts >= max {
-                return None;
-            }
+        if let Some(max) = self.policy.max_attempts
+            && self.attempts >= max
+        {
+            return None;
         }
         self.attempts += 1;
 

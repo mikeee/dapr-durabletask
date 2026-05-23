@@ -13,7 +13,7 @@ use dapr_durabletask::worker::{ActivityResult, OrchestratorResult, TaskHubGrpcWo
 /// Activity: greets a city by name.
 async fn say_hello(_ctx: ActivityContext, input: Option<String>) -> ActivityResult {
     let name: String = serde_json::from_str(input.as_deref().unwrap_or("\"World\""))?;
-    let greeting = format!("Hello, {}!", name);
+    let greeting = format!("Hello, {name}!");
     Ok(Some(serde_json::to_string(&greeting)?))
 }
 
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     let instance_id = client
         .schedule_new_orchestration("sequence", None, None, None)
         .await?;
-    println!("Started orchestration: {}", instance_id);
+    println!("Started orchestration: {instance_id}");
 
     // Wait for completion
     let state = client

@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let instance_id = client
         .schedule_new_orchestration("fanout_fanin", None, None, None)
         .await?;
-    println!("Started orchestration: {}", instance_id);
+    println!("Started orchestration: {instance_id}");
 
     let state = client
         .wait_for_orchestration_completion(&instance_id, true, None)

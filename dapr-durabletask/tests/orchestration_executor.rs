@@ -358,7 +358,7 @@ async fn test_orchestration_with_input() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let input: String = ctx.get_input().unwrap();
-            Ok(Some(format!("\"got: {}\"", input)))
+            Ok(Some(format!("\"got: {input}\"")))
         })
     });
 
@@ -593,7 +593,7 @@ async fn test_activity_failure_caught() {
             match result {
                 Ok(v) => Ok(v),
                 Err(DurableTaskError::TaskFailed { message, .. }) => {
-                    Ok(Some(format!("\"caught: {}\"", message)))
+                    Ok(Some(format!("\"caught: {message}\"")))
                 }
                 Err(e) => Err(e),
             }
@@ -955,7 +955,7 @@ async fn test_fan_out_fan_in_completion() {
             let results = when_all(tasks).await?;
             // Count completed results
             let count = results.iter().filter(|r| r.is_some()).count();
-            Ok(Some(format!("{}", count)))
+            Ok(Some(format!("{count}")))
         })
     });
 
@@ -1044,7 +1044,7 @@ async fn test_when_any_first_completes() {
             let t1 = ctx.call_activity("fast", ());
             let t2 = ctx.call_activity("medium", ());
             let winner = when_any(vec![t0, t1, t2]).await?;
-            Ok(Some(format!("{}", winner)))
+            Ok(Some(format!("{winner}")))
         })
     });
 
@@ -1079,7 +1079,7 @@ async fn test_when_any_with_timer_timeout() {
             let activity_task = ctx.call_activity("slow_activity", ());
             let timer_task = ctx.create_timer(std::time::Duration::from_secs(30));
             let winner = when_any(vec![activity_task, timer_task]).await?;
-            Ok(Some(format!("{}", winner)))
+            Ok(Some(format!("{winner}")))
         })
     });
 
@@ -1253,7 +1253,7 @@ async fn test_terminate_prevents_execution() {
                 proto::OrchestrationStatus::Terminated as i32
             );
         }
-        other => panic!("expected CompleteWorkflow, got {:?}", other),
+        other => panic!("expected CompleteWorkflow, got {other:?}"),
     }
 }
 
@@ -1437,7 +1437,7 @@ async fn test_orchestrator_context_accessors() {
         Box::pin(async move {
             let name = ctx.name();
             let iid = ctx.instance_id();
-            Ok(Some(format!("\"{}:{}\"", name, iid)))
+            Ok(Some(format!("\"{name}:{iid}\"")))
         })
     });
 
@@ -1694,7 +1694,7 @@ async fn test_action_ids_are_sequential() {
 
     // The pending actions should have sequential IDs
     for (i, action) in resp.actions.iter().enumerate() {
-        assert_eq!(action.id, i as i32, "Action {} should have id {}", i, i);
+        assert_eq!(action.id, i as i32, "Action {i} should have id {i}");
     }
 }
 
@@ -1841,7 +1841,7 @@ async fn test_terminate_with_output() {
             );
             assert_eq!(cw.result, Some("\"terminated reason\"".to_string()));
         }
-        other => panic!("expected CompleteWorkflow, got {:?}", other),
+        other => panic!("expected CompleteWorkflow, got {other:?}"),
     }
 }
 
@@ -1902,7 +1902,7 @@ async fn test_when_any_activity_completes_before_timer() {
             let activity_task = ctx.call_activity("fast_activity", ());
             let timer_task = ctx.create_timer(std::time::Duration::from_secs(60));
             let winner = when_any(vec![activity_task, timer_task]).await?;
-            Ok(Some(format!("{}", winner)))
+            Ok(Some(format!("{winner}")))
         })
     });
 

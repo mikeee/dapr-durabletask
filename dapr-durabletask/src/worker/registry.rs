@@ -214,10 +214,10 @@ impl Registry {
         let entries = self.orchestrators.get(name)?;
 
         // 1. Exact version match.
-        if let Some(v) = version {
-            if let Some(entry) = entries.iter().find(|e| e.version.as_deref() == Some(v)) {
-                return Some(&entry.f);
-            }
+        if let Some(v) = version
+            && let Some(entry) = entries.iter().find(|e| e.version.as_deref() == Some(v))
+        {
+            return Some(&entry.f);
         }
 
         // 2. Latest-flagged entry (last registered wins).

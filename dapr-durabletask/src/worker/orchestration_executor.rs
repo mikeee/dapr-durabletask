@@ -282,10 +282,10 @@ impl OrchestrationExecutor {
 
         match event_type {
             EventType::WorkflowStarted(ws) => {
-                if let Some(ts) = &event.timestamp {
-                    if let Some(dt) = from_timestamp(ts) {
-                        inner.current_utc_datetime = dt;
-                    }
+                if let Some(ts) = &event.timestamp
+                    && let Some(dt) = from_timestamp(ts)
+                {
+                    inner.current_utc_datetime = dt;
                 }
                 if let Some(version) = &ws.version {
                     for patch in &version.patches {
@@ -434,20 +434,20 @@ impl OrchestrationExecutor {
                     "External event raised"
                 );
 
-                if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name) {
-                    if !tasks.is_empty() {
-                        let task = tasks.remove(0);
-                        if task.is_complete() {
-                            tracing::debug!(
-                                instance_id = %instance_id,
-                                event_name = %e.name,
-                                "Skipping duplicate task completion"
-                            );
-                            return;
-                        }
-                        task.complete_with_phase(e.input.clone(), during_replay);
+                if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name)
+                    && !tasks.is_empty()
+                {
+                    let task = tasks.remove(0);
+                    if task.is_complete() {
+                        tracing::debug!(
+                            instance_id = %instance_id,
+                            event_name = %e.name,
+                            "Skipping duplicate task completion"
+                        );
                         return;
                     }
+                    task.complete_with_phase(e.input.clone(), during_replay);
+                    return;
                 }
 
                 if inner.buffered_events.len() >= inner.max_event_names
@@ -973,7 +973,7 @@ mod tests {
                 );
                 assert!(cw.result.is_none());
             }
-            other => panic!("expected CompleteWorkflow, got {:?}", other),
+            other => panic!("expected CompleteWorkflow, got {other:?}"),
         }
     }
 

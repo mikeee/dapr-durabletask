@@ -20,18 +20,15 @@ use dapr_durabletask::worker::{ActivityResult, OrchestratorResult, TaskHubGrpcWo
 /// Activity: sends an approval request (placeholder).
 async fn send_approval_request(_ctx: ActivityContext, input: Option<String>) -> ActivityResult {
     let order: String = serde_json::from_str(input.as_deref().unwrap_or("\"\""))?;
-    println!("[activity] Sending approval request for order: {}", order);
+    println!("[activity] Sending approval request for order: {order}");
     Ok(None)
 }
 
 /// Activity: process an approved order.
 async fn process_order(_ctx: ActivityContext, input: Option<String>) -> ActivityResult {
     let order: String = serde_json::from_str(input.as_deref().unwrap_or("\"\""))?;
-    println!("[activity] Processing approved order: {}", order);
-    Ok(Some(serde_json::to_string(&format!(
-        "Processed: {}",
-        order
-    ))?))
+    println!("[activity] Processing approved order: {order}");
+    Ok(Some(serde_json::to_string(&format!("Processed: {order}"))?))
 }
 
 /// Orchestrator: waits for an "approval" external event or a 1-hour timeout.

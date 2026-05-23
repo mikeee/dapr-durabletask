@@ -42,7 +42,7 @@ impl SidecarHandle {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .unwrap_or_else(|e| panic!("Failed to start sidecar '{}': {}", bin, e));
+            .unwrap_or_else(|e| panic!("Failed to start sidecar '{bin}': {e}"));
         Some(Self { port, process })
     }
 
@@ -772,7 +772,7 @@ async fn test_human_interaction_three_orchestrations() {
         "hi_send_approval_request",
         |_ctx, input| async move {
             let order: String = serde_json::from_str(input.as_deref().unwrap_or("\"\""))?;
-            eprintln!("[e2e] Sending approval request for: {}", order);
+            eprintln!("[e2e] Sending approval request for: {order}");
             Ok(None)
         },
     );
@@ -780,11 +780,8 @@ async fn test_human_interaction_three_orchestrations() {
         .registry_mut()
         .add_named_activity("hi_process_order", |_ctx, input| async move {
             let order: String = serde_json::from_str(input.as_deref().unwrap_or("\"\""))?;
-            eprintln!("[e2e] Processing order: {}", order);
-            Ok(Some(serde_json::to_string(&format!(
-                "Processed: {}",
-                order
-            ))?))
+            eprintln!("[e2e] Processing order: {order}");
+            Ok(Some(serde_json::to_string(&format!("Processed: {order}"))?))
         });
 
     let guard = WorkerGuard::start(worker);
@@ -800,7 +797,7 @@ async fn test_human_interaction_three_orchestrations() {
             .schedule_new_orchestration("hi_approval_workflow", Some(input), None, None)
             .await
             .unwrap();
-        eprintln!("[e2e] Started orchestration for {} → {}", order, id);
+        eprintln!("[e2e] Started orchestration for {order} → {id}");
         instance_ids.push(id);
     }
 
@@ -900,7 +897,7 @@ async fn test_worker_connects_after_sidecar_starts_late() {
     }
 
     let port = harness::free_port();
-    let address = format!("http://127.0.0.1:{}", port);
+    let address = format!("http://127.0.0.1:{port}");
 
     let options = WorkerOptions::new().with_reconnect_policy(test_reconnect_policy());
     let mut worker = TaskHubGrpcWorker::with_options(&address, options);
@@ -1024,7 +1021,7 @@ async fn test_worker_stops_after_max_attempts() {
 
     // Nothing is listening on this port.
     let port = harness::free_port();
-    let address = format!("http://127.0.0.1:{}", port);
+    let address = format!("http://127.0.0.1:{port}");
 
     let policy = ReconnectPolicy::new()
         .with_initial_delay(Duration::from_millis(30))
@@ -1057,7 +1054,7 @@ async fn test_worker_shutdown_interrupts_reconnect_wait() {
     }
 
     let port = harness::free_port(); // nothing listening
-    let address = format!("http://127.0.0.1:{}", port);
+    let address = format!("http://127.0.0.1:{port}");
 
     // 60 s backoff — we expect the shutdown to fire long before this.
     let policy = ReconnectPolicy::new()
