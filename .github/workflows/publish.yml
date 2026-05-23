@@ -32,6 +32,19 @@ jobs:
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
             experimental-features = nix-command flakes
 
+      - name: Prefetch flake inputs (with retry)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if nix flake archive --json >/dev/null; then
+              echo "Flake inputs fetched on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Flake fetch attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to prefetch flake inputs after 5 attempts"
+          exit 1
+
       - name: cargo publish --dry-run - ${{ matrix.crate }}
         env:
           DURABLETASK_SKIP_SIDECAR: "1"
@@ -60,6 +73,19 @@ jobs:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
             experimental-features = nix-command flakes
+
+      - name: Prefetch flake inputs (with retry)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if nix flake archive --json >/dev/null; then
+              echo "Flake inputs fetched on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Flake fetch attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to prefetch flake inputs after 5 attempts"
+          exit 1
 
       - name: Mask CARGO_TOKEN
         env:

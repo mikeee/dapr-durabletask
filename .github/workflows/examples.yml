@@ -43,6 +43,19 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v13
 
+      - name: Prefetch flake inputs (with retry)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if nix flake archive --json >/dev/null; then
+              echo "Flake inputs fetched on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Flake fetch attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to prefetch flake inputs after 5 attempts"
+          exit 1
+
       - name: Start durabletask-go sidecar
         run: |
           nix develop .#stable --command bash -c '
