@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  NIX_CONFIG: "access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
+
 jobs:
   publish-dry:
     name: Publish Test (${{ matrix.crate }})
@@ -25,8 +28,8 @@ jobs:
       - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
         with:
           nix_path: nixpkgs=channel:nixpkgs-unstable
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
           extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
             experimental-features = nix-command flakes
 
       - name: cargo publish --dry-run - ${{ matrix.crate }}
@@ -54,8 +57,8 @@ jobs:
       - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
         with:
           nix_path: nixpkgs=channel:nixpkgs-unstable
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
           extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
             experimental-features = nix-command flakes
 
       - name: Mask CARGO_TOKEN
