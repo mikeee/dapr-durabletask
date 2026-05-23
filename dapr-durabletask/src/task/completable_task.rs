@@ -120,19 +120,19 @@ impl Future for CompletableTask {
         match &inner.result {
             Some(TaskResult::Completed(value)) => {
                 let value = value.clone();
-                if !inner.completed_during_replay {
-                    if let Some(handle) = inner.replay_handle.as_ref() {
-                        handle.store(false, Ordering::Release);
-                    }
+                if !inner.completed_during_replay
+                    && let Some(handle) = inner.replay_handle.as_ref()
+                {
+                    handle.store(false, Ordering::Release);
                 }
                 Poll::Ready(Ok(value))
             }
             Some(TaskResult::Failed(details)) => {
                 let details = details.clone();
-                if !inner.completed_during_replay {
-                    if let Some(handle) = inner.replay_handle.as_ref() {
-                        handle.store(false, Ordering::Release);
-                    }
+                if !inner.completed_during_replay
+                    && let Some(handle) = inner.replay_handle.as_ref()
+                {
+                    handle.store(false, Ordering::Release);
                 }
                 Poll::Ready(Err(DurableTaskError::TaskFailed {
                     message: details.message.clone(),
