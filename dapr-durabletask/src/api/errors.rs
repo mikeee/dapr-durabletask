@@ -104,13 +104,13 @@ mod tests {
     fn from_tonic_status() {
         let status = tonic::Status::internal("test");
         let err: DurableTaskError = status.into();
-        matches!(err, DurableTaskError::GrpcError(_));
+        assert!(matches!(err, DurableTaskError::GrpcError(_)));
     }
 
     #[test]
     fn from_serde_json_error() {
         let json_err = serde_json::from_str::<String>("not valid json").unwrap_err();
         let err: DurableTaskError = json_err.into();
-        matches!(err, DurableTaskError::Serialization(_));
+        assert!(matches!(err, DurableTaskError::Serialization(_)));
     }
 }
