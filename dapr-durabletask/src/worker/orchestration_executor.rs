@@ -8,7 +8,7 @@ use crate::internal::from_timestamp;
 use crate::proto;
 use crate::proto::history_event::EventType;
 use crate::task::OrchestrationContext;
-use crate::task::orchestration_context::OrchestrationContextInner;
+use crate::task::orchestration_context::{OrchestrationContextInner, lock_inner};
 
 use super::options::WorkerOptions;
 use super::registry::OrchestratorFn;
@@ -42,6 +42,7 @@ impl OrchestrationExecutor {
             "Starting orchestration execution"
         );
 
+        // Name and input start empty and are overwritten when ExecutionStarted is replayed.
         let ctx = OrchestrationContext::new(
             instance_id.to_string(),
             String::new(),
@@ -55,8 +56,8 @@ impl OrchestrationExecutor {
         // Stash the propagated history (if any) before running the function so
         // that ctx.propagated_history() is available during user code.
         if propagated_history.is_some() {
-            let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.propagated_history = propagated_history;
+            let mut inner = lock_inner(&ctx.inner);
+            inner.propagated_history = propagated_history.map(std::sync::Arc::new);
         }
 
         // Process all history events under a single lock acquisition.
@@ -68,7 +69,7 @@ impl OrchestrationExecutor {
         // the replay frontier.
         let initially_replaying = !old_events.is_empty();
         {
-            let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = lock_inner(&ctx.inner);
             inner.is_replaying.store(true, Ordering::Release);
             tracing::debug!(
                 instance_id = %instance_id,
@@ -109,14 +110,14 @@ impl OrchestrationExecutor {
         // Start an OTel orchestration span
         #[cfg(feature = "opentelemetry")]
         let otel_ctx = {
-            let inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let inner = lock_inner(&ctx.inner);
             let parent_tc = Self::find_parent_trace_context(&old_events, &new_events);
             let parent_ctx = crate::internal::otel::context_from_trace_context(parent_tc);
             crate::internal::otel::start_orchestration_span(&parent_ctx, &inner.name, instance_id)
         };
 
         let should_run = {
-            let inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let inner = lock_inner(&ctx.inner);
             !inner.is_suspended && !inner.is_complete
         };
 
@@ -130,7 +131,7 @@ impl OrchestrationExecutor {
 
             match poll_result {
                 Poll::Ready(Ok(output)) => {
-                    let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut inner = lock_inner(&ctx.inner);
                     if inner.continue_as_new_input.is_some() {
                         tracing::info!(
                             instance_id = %instance_id,
@@ -161,7 +162,7 @@ impl OrchestrationExecutor {
                     message,
                     failure_details,
                 })) => {
-                    let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut inner = lock_inner(&ctx.inner);
                     tracing::warn!(
                         instance_id = %instance_id,
                         orchestrator = %inner.name,
@@ -183,7 +184,7 @@ impl OrchestrationExecutor {
                         }));
                 }
                 Poll::Ready(Err(e)) => {
-                    let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut inner = lock_inner(&ctx.inner);
                     tracing::error!(
                         instance_id = %instance_id,
                         orchestrator = %inner.name,
@@ -204,7 +205,7 @@ impl OrchestrationExecutor {
                     });
                 }
                 Poll::Pending => {
-                    let inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    let inner = lock_inner(&ctx.inner);
                     tracing::debug!(
                         instance_id = %instance_id,
                         orchestrator = %inner.name,
@@ -214,7 +215,7 @@ impl OrchestrationExecutor {
                 }
             }
         } else {
-            let inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let inner = lock_inner(&ctx.inner);
             tracing::debug!(
                 instance_id = %instance_id,
                 is_suspended = inner.is_suspended,
@@ -299,7 +300,7 @@ impl OrchestrationExecutor {
                     orchestrator = %e.name,
                     "Execution started event"
                 );
-                inner.name = e.name.clone();
+                inner.name = std::sync::Arc::<str>::from(e.name.clone());
                 inner.input = e.input.clone();
             }
             EventType::TaskCompleted(e) => {
@@ -437,7 +438,9 @@ impl OrchestrationExecutor {
                 if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name)
                     && !tasks.is_empty()
                 {
-                    let task = tasks.remove(0);
+                    let task = tasks
+                        .pop_front()
+                        .expect("pending event task queue is not empty");
                     if task.is_complete() {
                         tracing::debug!(
                             instance_id = %instance_id,
@@ -450,7 +453,7 @@ impl OrchestrationExecutor {
                     return;
                 }
 
-                if inner.buffered_events.len() >= inner.max_event_names
+                if inner.buffered_events.len() >= inner.config.max_event_names
                     && !inner.buffered_events.contains_key(&event_name)
                 {
                     tracing::warn!(
@@ -461,7 +464,7 @@ impl OrchestrationExecutor {
                     return;
                 }
 
-                let max_events = inner.max_events_per_name;
+                let max_events = inner.config.max_events_per_name;
                 let events = inner.buffered_events.entry(event_name).or_default();
                 if events.len() >= max_events {
                     tracing::warn!(
@@ -471,7 +474,7 @@ impl OrchestrationExecutor {
                     );
                     return;
                 }
-                events.push((e.input.clone(), during_replay));
+                events.push_back((e.input.clone(), during_replay));
             }
             EventType::ExecutionSuspended(_) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration suspended");
@@ -497,12 +500,43 @@ impl OrchestrationExecutor {
         }
     }
 
+    fn make_complete_action(
+        id: i32,
+        status: proto::OrchestrationStatus,
+        result: Option<String>,
+        carryover_events: Vec<proto::HistoryEvent>,
+        failure: Option<FailureDetails>,
+    ) -> proto::WorkflowAction {
+        proto::WorkflowAction {
+            id,
+            router: None,
+            workflow_action_type: Some(
+                proto::workflow_action::WorkflowActionType::CompleteWorkflow(
+                    proto::CompleteWorkflowAction {
+                        workflow_status: status as i32,
+                        result,
+                        details: None,
+                        new_version: None,
+                        carryover_events,
+                        failure_details: failure.map(|f| proto::TaskFailureDetails {
+                            error_type: f.error_type,
+                            error_message: f.message,
+                            stack_trace: f.stack_trace,
+                            inner_failure: None,
+                            is_non_retriable: false,
+                        }),
+                    },
+                ),
+            ),
+        }
+    }
+
     fn build_response(
         ctx: &OrchestrationContext,
         instance_id: &str,
         completion_token: String,
     ) -> proto::WorkflowResponse {
-        let mut inner = ctx.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&ctx.inner);
 
         // Move actions out instead of cloning — the context is consumed after
         // this response is built, so the original Vec is no longer needed.
@@ -526,84 +560,42 @@ impl OrchestrationExecutor {
                 }
             }
 
-            actions.push(proto::WorkflowAction {
-                id: actions.len() as i32,
-                router: None,
-                workflow_action_type: Some(
-                    proto::workflow_action::WorkflowActionType::CompleteWorkflow(
-                        proto::CompleteWorkflowAction {
-                            workflow_status: proto::OrchestrationStatus::ContinuedAsNew as i32,
-                            result: Some(new_input),
-                            details: None,
-                            new_version: None,
-                            carryover_events,
-                            failure_details: None,
-                        },
-                    ),
-                ),
-            });
-        } else if let Some(ref status) = inner.completion_status {
+            actions.push(Self::make_complete_action(
+                actions.len() as i32,
+                proto::OrchestrationStatus::ContinuedAsNew,
+                Some(new_input),
+                carryover_events,
+                None,
+            ));
+        } else if let Some(status) = inner.completion_status {
             match status {
                 OrchestrationStatus::Completed => {
-                    actions.push(proto::WorkflowAction {
-                        id: actions.len() as i32,
-                        router: None,
-                        workflow_action_type: Some(
-                            proto::workflow_action::WorkflowActionType::CompleteWorkflow(
-                                proto::CompleteWorkflowAction {
-                                    workflow_status: proto::OrchestrationStatus::Completed as i32,
-                                    result: inner.completion_result.take(),
-                                    details: None,
-                                    new_version: None,
-                                    carryover_events: vec![],
-                                    failure_details: None,
-                                },
-                            ),
-                        ),
-                    });
+                    actions.push(Self::make_complete_action(
+                        actions.len() as i32,
+                        proto::OrchestrationStatus::Completed,
+                        inner.completion_result.take(),
+                        Vec::new(),
+                        None,
+                    ));
                 }
                 OrchestrationStatus::Failed => {
                     let failure = inner.completion_failure.take();
-                    actions.push(proto::WorkflowAction {
-                        id: actions.len() as i32,
-                        router: None,
-                        workflow_action_type: Some(
-                            proto::workflow_action::WorkflowActionType::CompleteWorkflow(
-                                proto::CompleteWorkflowAction {
-                                    workflow_status: proto::OrchestrationStatus::Failed as i32,
-                                    result: None,
-                                    details: None,
-                                    new_version: None,
-                                    carryover_events: vec![],
-                                    failure_details: failure.map(|f| proto::TaskFailureDetails {
-                                        error_type: f.error_type,
-                                        error_message: f.message,
-                                        stack_trace: f.stack_trace,
-                                        inner_failure: None,
-                                        is_non_retriable: false,
-                                    }),
-                                },
-                            ),
-                        ),
-                    });
+                    actions.push(Self::make_complete_action(
+                        actions.len() as i32,
+                        proto::OrchestrationStatus::Failed,
+                        None,
+                        Vec::new(),
+                        failure,
+                    ));
                 }
                 OrchestrationStatus::Terminated => {
-                    actions.push(proto::WorkflowAction {
-                        id: actions.len() as i32,
-                        router: None,
-                        workflow_action_type: Some(
-                            proto::workflow_action::WorkflowActionType::CompleteWorkflow(
-                                proto::CompleteWorkflowAction {
-                                    workflow_status: proto::OrchestrationStatus::Terminated as i32,
-                                    result: inner.completion_result.take(),
-                                    details: None,
-                                    new_version: None,
-                                    carryover_events: vec![],
-                                    failure_details: None,
-                                },
-                            ),
-                        ),
-                    });
+                    actions.push(Self::make_complete_action(
+                        actions.len() as i32,
+                        proto::OrchestrationStatus::Terminated,
+                        inner.completion_result.take(),
+                        Vec::new(),
+                        None,
+                    ));
                 }
                 _ => {
                     // Other statuses (Pending, Running, etc.) don't produce completion actions

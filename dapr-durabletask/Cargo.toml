@@ -11,6 +11,7 @@ rust-version.workspace = true
 [features]
 default = []
 opentelemetry = ["dep:opentelemetry"]
+proto = []
 
 [dependencies]
 # Protobuf types
@@ -39,6 +40,7 @@ thiserror = "2.0.18"
 uuid = { version = "1.23.1", features = ["v4"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 futures = "0.3.32"
+rand = "0.10.1"
 
 [dev-dependencies]
 tracing-subscriber = "0.3.23"

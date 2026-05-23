@@ -136,7 +136,7 @@ async fn test_single_orchestration_without_activity() {
     worker
         .registry_mut()
         .add_named_orchestrator("no_activity_orch", |ctx| async move {
-            let input: i32 = ctx.get_input()?;
+            let input: i32 = ctx.input()?;
             Ok(Some(serde_json::to_string(&(input + 1)).unwrap()))
         });
     let guard = WorkerGuard::start(worker);
@@ -175,7 +175,7 @@ async fn test_activity_sequence() {
     worker
         .registry_mut()
         .add_named_orchestrator("sequence_orch", |ctx| async move {
-            let start_val: i32 = ctx.get_input()?;
+            let start_val: i32 = ctx.input()?;
             let mut numbers = vec![start_val];
             let mut current = start_val;
 
@@ -235,7 +235,7 @@ async fn test_fan_out_fan_in() {
     worker
         .registry_mut()
         .add_named_orchestrator("fanout_orch", |ctx| async move {
-            let count: i32 = ctx.get_input()?;
+            let count: i32 = ctx.input()?;
             let mut tasks = Vec::new();
             for _ in 0..count {
                 tasks.push(ctx.call_activity("increment", ()));
@@ -321,7 +321,7 @@ async fn test_sub_orchestration_fan_out() {
     worker
         .registry_mut()
         .add_named_orchestrator("child_fanout_orch", |ctx| async move {
-            let count: i32 = ctx.get_input()?;
+            let count: i32 = ctx.input()?;
             for _ in 0..count {
                 ctx.call_activity("increment", ()).await?;
             }
@@ -330,7 +330,7 @@ async fn test_sub_orchestration_fan_out() {
     worker
         .registry_mut()
         .add_named_orchestrator("parent_fanout_orch", |ctx| async move {
-            let count: i32 = ctx.get_input()?;
+            let count: i32 = ctx.input()?;
             let mut tasks = Vec::new();
             for _ in 0..count {
                 tasks.push(ctx.call_sub_orchestrator("child_fanout_orch", ACTIVITY_COUNT, None));
@@ -597,7 +597,7 @@ async fn test_continue_as_new() {
     worker
         .registry_mut()
         .add_named_orchestrator("continue_orch", |ctx| async move {
-            let input: i32 = ctx.get_input()?;
+            let input: i32 = ctx.input()?;
             if input < 10 {
                 ctx.continue_as_new(input + 1, true);
                 Ok(None)
@@ -697,7 +697,7 @@ async fn test_purge_orchestration() {
     worker
         .registry_mut()
         .add_named_orchestrator("purge_orch", |ctx| async move {
-            let input: i32 = ctx.get_input()?;
+            let input: i32 = ctx.input()?;
             let result = ctx.call_activity("plus_one", input).await?;
             Ok(result)
         });
@@ -751,7 +751,7 @@ async fn test_human_interaction_three_orchestrations() {
     worker
         .registry_mut()
         .add_named_orchestrator("hi_approval_workflow", |ctx| async move {
-            let order: String = ctx.get_input().unwrap_or_else(|_| "unknown".into());
+            let order: String = ctx.input().unwrap_or_else(|_| "unknown".into());
 
             ctx.call_activity("hi_send_approval_request", &order)
                 .await?;

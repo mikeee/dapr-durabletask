@@ -9,13 +9,7 @@ use super::completable_task::{CompletableTask, TaskResult};
 /// A future that completes when all tasks complete, or fails if any task fails.
 /// Returns a `Vec` of JSON-serialised results on success.
 pub struct WhenAllTask {
-    tasks: Vec<CompletableTask>,
-}
-
-impl WhenAllTask {
-    pub fn new(tasks: Vec<CompletableTask>) -> Self {
-        Self { tasks }
-    }
+    pub(crate) tasks: Vec<CompletableTask>,
 }
 
 impl Future for WhenAllTask {
@@ -60,7 +54,7 @@ impl Future for WhenAllTask {
 
 /// Wait for all tasks to complete. Fails if any task fails.
 pub fn when_all(tasks: Vec<CompletableTask>) -> WhenAllTask {
-    WhenAllTask::new(tasks)
+    WhenAllTask { tasks }
 }
 
 #[cfg(test)]

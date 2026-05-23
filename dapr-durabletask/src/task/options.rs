@@ -14,15 +14,18 @@ pub struct ActivityOptions {
 }
 
 impl ActivityOptions {
+    /// Create an `ActivityOptions` with all fields unset.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Route the activity to a specific Dapr app ID (cross-app invocation).
     pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = Some(app_id.into());
         self
     }
 
+    /// Attach a retry policy applied when the activity fails.
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
         self
@@ -51,20 +54,25 @@ pub struct SubOrchestratorOptions {
 }
 
 impl SubOrchestratorOptions {
+    /// Create a `SubOrchestratorOptions` with all fields unset.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Use the given explicit instance ID for the sub-orchestration.
+    /// If unset, a random UUID is generated for each attempt.
     pub fn with_instance_id(mut self, id: impl Into<String>) -> Self {
         self.instance_id = Some(id.into());
         self
     }
 
+    /// Route the sub-orchestration to a specific Dapr app ID.
     pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = Some(app_id.into());
         self
     }
 
+    /// Attach a retry policy applied when the sub-orchestration fails.
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
         self

@@ -86,11 +86,7 @@ async fn fraud_check_child(ctx: OrchestrationContext) -> OrchestratorResult {
 }
 
 async fn payment_parent(ctx: OrchestrationContext) -> OrchestratorResult {
-    let amount: f64 = ctx
-        .get_input::<Option<f64>>()
-        .ok()
-        .flatten()
-        .unwrap_or(250.0);
+    let amount: f64 = ctx.input::<Option<f64>>().ok().flatten().unwrap_or(250.0);
 
     // Activity call with Lineage — verify_funds gets parent + any ancestors.
     let _ = ctx

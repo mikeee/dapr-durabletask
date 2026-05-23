@@ -40,6 +40,9 @@ pub fn from_json<T: DeserializeOwned>(json: Option<&str>, max_json_size: usize) 
 }
 
 /// Deserialise from an optional JSON string, returning `Ok(None)` if input is `None`.
+///
+/// Note: `from_json::<Option<T>>(json, max)` is equivalent and preferred in
+/// non-test code. This helper is kept for test ergonomics.
 #[cfg(test)]
 pub fn from_json_optional<T: DeserializeOwned>(
     json: Option<&str>,

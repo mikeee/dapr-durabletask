@@ -321,7 +321,7 @@ fn worker_fanout(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_fanout", |ctx| async move {
-            let width: i32 = ctx.get_input()?;
+            let width: i32 = ctx.input()?;
             let tasks: Vec<_> = (0..width)
                 .map(|_| ctx.call_activity("noop_fan", ()))
                 .collect();
@@ -339,7 +339,7 @@ fn worker_chain(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_chain", |ctx| async move {
-            let steps: i32 = ctx.get_input()?;
+            let steps: i32 = ctx.input()?;
             for i in 0..steps {
                 ctx.call_activity("chain_step", i).await?;
             }
@@ -381,7 +381,7 @@ fn worker_sub_orchestration(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str)
         });
     w.registry_mut()
         .add_named_orchestrator("perf_parent", |ctx| async move {
-            let count: i32 = ctx.get_input()?;
+            let count: i32 = ctx.input()?;
             let tasks: Vec<_> = (0..count)
                 .map(|_| ctx.call_sub_orchestrator("perf_child", (), None))
                 .collect();
@@ -399,7 +399,7 @@ fn worker_continue_as_new(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_continue", |ctx| async move {
-            let iteration: i32 = ctx.get_input()?;
+            let iteration: i32 = ctx.input()?;
             ctx.call_activity("iter_work", iteration).await?;
             let target: i32 = 10;
             if iteration < target {
@@ -418,7 +418,7 @@ fn worker_when_any_race(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_race", |ctx| async move {
-            let width: i32 = ctx.get_input()?;
+            let width: i32 = ctx.input()?;
             let tasks: Vec<_> = (0..width)
                 .map(|i| ctx.call_activity("race_work", i))
                 .collect();
@@ -437,7 +437,7 @@ fn worker_deep_chain(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_deep_chain", |ctx| async move {
-            let steps: i32 = ctx.get_input()?;
+            let steps: i32 = ctx.input()?;
             let mut acc = 0_i64;
             for i in 0..steps {
                 let result = ctx.call_activity("deep_step", i).await?;
@@ -460,7 +460,7 @@ fn worker_wide_fanout(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_wide_fan", |ctx| async move {
-            let width: i32 = ctx.get_input()?;
+            let width: i32 = ctx.input()?;
             let tasks: Vec<_> = (0..width)
                 .map(|i| ctx.call_activity("wide_work", i))
                 .collect();
@@ -478,7 +478,7 @@ fn worker_payload(env: &harness::TestEnv) -> (TaskHubGrpcWorker, &str) {
     let mut w = env.new_worker();
     w.registry_mut()
         .add_named_orchestrator("perf_payload", |ctx| async move {
-            let input: String = ctx.get_input()?;
+            let input: String = ctx.input()?;
             let result = ctx.call_activity("echo", &input).await?;
             Ok(result)
         });
