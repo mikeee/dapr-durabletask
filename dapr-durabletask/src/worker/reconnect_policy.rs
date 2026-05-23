@@ -158,22 +158,8 @@ impl<'a> BackoffIter<'a> {
 
 /// Add a uniformly-distributed ±10 % offset to `d`.
 fn apply_jitter(d: Duration) -> Duration {
-    // Simple LCG-based random — avoids pulling in the `rand` crate.
-    // Seeded from the lower bits of the current time.
-    static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seed = SEED.fetch_add(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(12345),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    // LCG parameters (Knuth).
-    let r = seed
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    // Map to [-0.1, +0.1].
-    let factor = (r % 201) as f64 / 1000.0 - 0.1;
+    // ±10 % uniform jitter.
+    let factor = rand::random_range(-0.1..=0.1);
     let adjusted = d.as_secs_f64() * (1.0 + factor);
     Duration::from_secs_f64(adjusted.max(0.0))
 }

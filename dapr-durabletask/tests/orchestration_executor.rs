@@ -5,10 +5,10 @@
 use std::sync::Arc;
 
 use dapr_durabletask::api::DurableTaskError;
-use dapr_durabletask::proto;
-use dapr_durabletask::proto::history_event::EventType;
 use dapr_durabletask::task::{when_all, when_any};
 use dapr_durabletask::worker::{OrchestrationExecutor, OrchestratorFn, WorkerOptions};
+use dapr_durabletask_proto as proto;
+use dapr_durabletask_proto::history_event::EventType;
 
 // ---------------------------------------------------------------------------
 // Event construction helpers
@@ -357,7 +357,7 @@ async fn test_empty_orchestration() {
 async fn test_orchestration_with_input() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
-            let input: String = ctx.get_input().unwrap();
+            let input: String = ctx.input().unwrap();
             Ok(Some(format!("\"got: {input}\"")))
         })
     });
@@ -2288,7 +2288,7 @@ async fn test_retry_no_retry_on_success() {
 // ===========================================================================
 
 use dapr_durabletask::api::{HistoryPropagationScope, PropagatedHistory};
-use dapr_durabletask::proto::prost::Message as _;
+use dapr_durabletask_proto::prost::Message as _;
 
 fn make_propagated_history(
     scope: proto::HistoryPropagationScope,
@@ -2411,7 +2411,8 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
     // ctx.propagated_history().
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> = StdArc::new(StdMutex::new(None));
+    let captured: StdArc<StdMutex<Option<StdArc<PropagatedHistory>>>> =
+        StdArc::new(StdMutex::new(None));
     let captured_clone = captured.clone();
     let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
         let captured = captured_clone.clone();
@@ -2471,7 +2472,8 @@ async fn test_propagated_history_own_history_drops_ancestors() {
     // OwnHistory: child must see the parent's events but NOT the grandparent's.
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> = StdArc::new(StdMutex::new(None));
+    let captured: StdArc<StdMutex<Option<StdArc<PropagatedHistory>>>> =
+        StdArc::new(StdMutex::new(None));
     let captured_clone = captured.clone();
     let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
         let captured = captured_clone.clone();
@@ -2525,12 +2527,13 @@ async fn test_propagated_history_own_history_drops_ancestors() {
 async fn test_propagated_history_absent_returns_none() {
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-    let captured: StdArc<StdMutex<Option<PropagatedHistory>>> =
-        StdArc::new(StdMutex::new(Some(PropagatedHistory {
-            scope: HistoryPropagationScope::OwnHistory,
-            events: vec![],
-            chunks: vec![],
-        })));
+    let initial = StdArc::new(PropagatedHistory {
+        scope: HistoryPropagationScope::OwnHistory,
+        events: vec![],
+        chunks: vec![],
+    });
+    let captured: StdArc<StdMutex<Option<StdArc<PropagatedHistory>>>> =
+        StdArc::new(StdMutex::new(Some(initial)));
     let captured_clone = captured.clone();
     let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
         let captured = captured_clone.clone();

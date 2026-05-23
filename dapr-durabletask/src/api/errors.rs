@@ -34,6 +34,18 @@ pub enum DurableTaskError {
     #[error("Serialisation error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// Invalid endpoint, URI, or address-parsing failure.
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
+
+    /// Failure establishing or maintaining a connection to the sidecar.
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
+
+    /// Internal SDK error (channel closed, semaphore poisoned, invariant violation, etc.).
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -98,6 +110,24 @@ mod tests {
     fn display_other() {
         let err = DurableTaskError::Other("custom".into());
         assert_eq!(err.to_string(), "custom");
+    }
+
+    #[test]
+    fn display_invalid_address() {
+        let err = DurableTaskError::InvalidAddress("not a url".into());
+        assert_eq!(err.to_string(), "Invalid address: not a url");
+    }
+
+    #[test]
+    fn display_connection_failed() {
+        let err = DurableTaskError::ConnectionFailed("refused".into());
+        assert_eq!(err.to_string(), "Connection failed: refused");
+    }
+
+    #[test]
+    fn display_internal() {
+        let err = DurableTaskError::Internal("semaphore closed".into());
+        assert_eq!(err.to_string(), "Internal error: semaphore closed");
     }
 
     #[test]

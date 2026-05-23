@@ -33,7 +33,7 @@ async fn process_order(_ctx: ActivityContext, input: Option<String>) -> Activity
 
 /// Orchestrator: waits for an "approval" external event or a 1-hour timeout.
 async fn approval_workflow(ctx: OrchestrationContext) -> OrchestratorResult {
-    let order: String = ctx.get_input().unwrap_or_else(|_| "default-order".into());
+    let order: String = ctx.input().unwrap_or_else(|_| "default-order".into());
 
     ctx.call_activity("send_approval_request", &order).await?;
 

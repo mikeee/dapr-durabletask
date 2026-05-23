@@ -9,8 +9,7 @@ use crate::proto::{
 };
 
 /// Maximum default allowed length for names and instance IDs.
-#[cfg(test)]
-pub const DEFAULT_MAX_IDENTIFIER_LENGTH: usize = 1_024;
+pub(crate) const DEFAULT_MAX_IDENTIFIER_LENGTH: usize = 1_024;
 
 /// Validate that a string identifier is within bounds and contains no control characters.
 pub fn validate_identifier(

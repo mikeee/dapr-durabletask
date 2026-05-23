@@ -50,23 +50,37 @@ pub enum HistoryPropagationScope {
     Lineage,
 }
 
+impl From<HistoryPropagationScope> for proto::HistoryPropagationScope {
+    fn from(scope: HistoryPropagationScope) -> Self {
+        match scope {
+            HistoryPropagationScope::OwnHistory => proto::HistoryPropagationScope::OwnHistory,
+            HistoryPropagationScope::Lineage => proto::HistoryPropagationScope::Lineage,
+        }
+    }
+}
+
+impl TryFrom<proto::HistoryPropagationScope> for HistoryPropagationScope {
+    type Error = ();
+
+    fn try_from(scope: proto::HistoryPropagationScope) -> std::result::Result<Self, Self::Error> {
+        match scope {
+            proto::HistoryPropagationScope::OwnHistory => Ok(Self::OwnHistory),
+            proto::HistoryPropagationScope::Lineage => Ok(Self::Lineage),
+            proto::HistoryPropagationScope::None => Err(()),
+        }
+    }
+}
+
 impl HistoryPropagationScope {
     /// Convert to the wire-format proto enum value.
     pub(crate) fn to_proto(self) -> proto::HistoryPropagationScope {
-        match self {
-            Self::OwnHistory => proto::HistoryPropagationScope::OwnHistory,
-            Self::Lineage => proto::HistoryPropagationScope::Lineage,
-        }
+        self.into()
     }
 
     /// Convert from a proto enum value, returning `None` for `SCOPE_NONE` or
     /// unknown variants.
     pub(crate) fn from_proto(scope: proto::HistoryPropagationScope) -> Option<Self> {
-        match scope {
-            proto::HistoryPropagationScope::OwnHistory => Some(Self::OwnHistory),
-            proto::HistoryPropagationScope::Lineage => Some(Self::Lineage),
-            proto::HistoryPropagationScope::None => None,
-        }
+        Self::try_from(scope).ok()
     }
 }
 
@@ -141,7 +155,10 @@ impl PropagatedHistory {
                 }
             }
             let event_count = raw.raw_events.len() as i32;
-            all_events.extend(decoded.iter().cloned());
+            // Clone each decoded event into the flat stream, then move the
+            // owned Vec into the chunk — no double allocation of the Vec
+            // backing storage.
+            all_events.extend_from_slice(&decoded);
             chunks.push(PropagatedHistoryChunk {
                 app_id: raw.app_id,
                 instance_id: raw.instance_id,
@@ -163,13 +180,11 @@ impl PropagatedHistory {
     /// (earliest ancestor first).
     pub fn app_ids(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for c in &self.chunks {
-            if seen.insert(c.app_id.clone()) {
-                out.push(c.app_id.clone());
-            }
-        }
-        out
+        self.chunks
+            .iter()
+            .filter(|c| seen.insert(c.app_id.as_str()))
+            .map(|c| c.app_id.clone())
+            .collect()
     }
 
     /// Return the chunk produced by a workflow with the given function name.

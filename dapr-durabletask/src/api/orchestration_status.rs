@@ -67,7 +67,18 @@ impl From<OrchestrationStatus> for i32 {
 
 impl fmt::Display for OrchestrationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
+        let s = match self {
+            Self::Running => "Running",
+            Self::Completed => "Completed",
+            Self::ContinuedAsNew => "ContinuedAsNew",
+            Self::Failed => "Failed",
+            Self::Canceled => "Canceled",
+            Self::Terminated => "Terminated",
+            Self::Pending => "Pending",
+            Self::Suspended => "Suspended",
+            Self::Stalled => "Stalled",
+        };
+        f.write_str(s)
     }
 }
 
@@ -107,9 +118,17 @@ mod tests {
 
     #[test]
     fn test_display() {
+        assert_eq!(OrchestrationStatus::Running.to_string(), "Running");
+        assert_eq!(OrchestrationStatus::Completed.to_string(), "Completed");
         assert_eq!(
             OrchestrationStatus::ContinuedAsNew.to_string(),
             "ContinuedAsNew"
         );
+        assert_eq!(OrchestrationStatus::Failed.to_string(), "Failed");
+        assert_eq!(OrchestrationStatus::Canceled.to_string(), "Canceled");
+        assert_eq!(OrchestrationStatus::Terminated.to_string(), "Terminated");
+        assert_eq!(OrchestrationStatus::Pending.to_string(), "Pending");
+        assert_eq!(OrchestrationStatus::Suspended.to_string(), "Suspended");
+        assert_eq!(OrchestrationStatus::Stalled.to_string(), "Stalled");
     }
 }

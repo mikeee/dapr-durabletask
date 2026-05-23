@@ -1,4 +1,5 @@
 use super::reconnect_policy::ReconnectPolicy;
+use crate::internal::DEFAULT_MAX_IDENTIFIER_LENGTH;
 
 /// Configuration options for [`TaskHubGrpcWorker`](super::TaskHubGrpcWorker).
 #[derive(Debug, Clone)]
@@ -48,7 +49,7 @@ impl Default for WorkerOptions {
             max_events_per_name: 10_000,
             max_pending_tasks_per_name: 10_000,
             max_json_payload_size: 64 * 1024 * 1024, // 64 MiB
-            max_identifier_length: 1_024,
+            max_identifier_length: DEFAULT_MAX_IDENTIFIER_LENGTH,
             reconnect_policy: ReconnectPolicy::default(),
         }
     }

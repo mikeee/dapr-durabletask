@@ -61,6 +61,34 @@ pub struct Registry {
     activities: HashMap<String, ActivityFn>,
 }
 
+impl std::fmt::Debug for Registry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct FnDebug;
+        impl std::fmt::Debug for FnDebug {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("<fn>")
+            }
+        }
+        type EntryView<'a> = (Option<&'a String>, bool, FnDebug);
+        let orchestrators: HashMap<&String, Vec<EntryView<'_>>> = self
+            .orchestrators
+            .iter()
+            .map(|(name, entries)| {
+                let rendered = entries
+                    .iter()
+                    .map(|e| (e.version.as_ref(), e.is_latest, FnDebug))
+                    .collect();
+                (name, rendered)
+            })
+            .collect();
+        let activities: Vec<&String> = self.activities.keys().collect();
+        f.debug_struct("Registry")
+            .field("orchestrators", &orchestrators)
+            .field("activities", &activities)
+            .finish()
+    }
+}
+
 impl Registry {
     /// Create an empty registry.
     pub fn new() -> Self {

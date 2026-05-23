@@ -7,13 +7,7 @@ use super::completable_task::CompletableTask;
 /// A future that completes when ANY task completes (success or failure).
 /// Returns the index of the first completed task.
 pub struct WhenAnyTask {
-    tasks: Vec<CompletableTask>,
-}
-
-impl WhenAnyTask {
-    pub fn new(tasks: Vec<CompletableTask>) -> Self {
-        Self { tasks }
-    }
+    pub(crate) tasks: Vec<CompletableTask>,
 }
 
 impl Future for WhenAnyTask {
@@ -36,7 +30,7 @@ impl Future for WhenAnyTask {
 
 /// Wait for any task to complete. Returns the index of the first completed task.
 pub fn when_any(tasks: Vec<CompletableTask>) -> WhenAnyTask {
-    WhenAnyTask::new(tasks)
+    WhenAnyTask { tasks }
 }
 
 #[cfg(test)]

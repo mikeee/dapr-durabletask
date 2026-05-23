@@ -21,9 +21,9 @@ async fn build_channel(host_address: &str, options: &ClientOptions) -> Result<Ch
     const USER_AGENT: &str = concat!("dapr-durabletask/rust/", env!("CARGO_PKG_VERSION"));
 
     let mut builder = Channel::from_shared(host_address.to_string())
-        .map_err(|e| DurableTaskError::Other(e.to_string()))?
+        .map_err(|e| DurableTaskError::InvalidAddress(e.to_string()))?
         .user_agent(USER_AGENT)
-        .map_err(|e| DurableTaskError::Other(e.to_string()))?;
+        .map_err(|e| DurableTaskError::InvalidAddress(e.to_string()))?;
 
     if let Some(tls) = &options.tls {
         if tls.skip_verify {
@@ -56,7 +56,7 @@ async fn build_channel(host_address: &str, options: &ClientOptions) -> Result<Ch
 
         builder = builder
             .tls_config(tls_config)
-            .map_err(|e| DurableTaskError::Other(e.to_string()))?;
+            .map_err(|e| DurableTaskError::ConnectionFailed(e.to_string()))?;
     }
 
     if let Some(timeout) = options.connect_timeout {
@@ -70,7 +70,7 @@ async fn build_channel(host_address: &str, options: &ClientOptions) -> Result<Ch
     builder
         .connect()
         .await
-        .map_err(|e| DurableTaskError::Other(e.to_string()))
+        .map_err(|e| DurableTaskError::ConnectionFailed(e.to_string()))
 }
 
 /// Wrap a channel in the gRPC client stub, applying the max-message-size limit.
@@ -88,11 +88,24 @@ impl TaskHubGrpcClient {
     /// Create a new client connected to the given host address.
     ///
     /// The default address is `http://localhost:4001`.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::InvalidAddress`] if `host_address` is not a
+    /// valid URI, or [`DurableTaskError::ConnectionFailed`] / [`DurableTaskError::GrpcError`]
+    /// if the underlying transport cannot be established.
     pub async fn new(host_address: &str) -> Result<Self> {
         Self::with_options(host_address, ClientOptions::default()).await
     }
 
     /// Create a new client connected to the given host address with custom options.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::InvalidAddress`] if `host_address` is not a
+    /// valid URI, [`DurableTaskError::Other`] if TLS options are inconsistent
+    /// (e.g. only one of `client_cert_pem` / `client_key_pem` is set, or
+    /// `skip_verify` is requested), or [`DurableTaskError::ConnectionFailed`] /
+    /// [`DurableTaskError::GrpcError`] if the underlying transport cannot be
+    /// established.
     pub async fn with_options(host_address: &str, options: ClientOptions) -> Result<Self> {
         tracing::info!(address = %host_address, "Connecting to sidecar");
         let channel = build_channel(host_address, &options).await?;
@@ -123,6 +136,12 @@ impl TaskHubGrpcClient {
     }
 
     /// Schedule a new orchestration instance and return its instance ID.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `orchestrator_name` or
+    /// `instance_id` is empty, exceeds the configured identifier length, or
+    /// contains control characters. Returns [`DurableTaskError::GrpcError`] if
+    /// the sidecar RPC fails.
     pub async fn schedule_new_orchestration(
         &mut self,
         orchestrator_name: &str,
@@ -187,6 +206,11 @@ impl TaskHubGrpcClient {
     }
 
     /// Get the current state of an orchestration.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails. The successful
+    /// result is `Ok(None)` if the instance does not exist.
     pub async fn get_orchestration_state(
         &mut self,
         instance_id: &str,
@@ -206,6 +230,11 @@ impl TaskHubGrpcClient {
     }
 
     /// Wait for an orchestration to start running.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid,
+    /// [`DurableTaskError::Timeout`] if `timeout` elapses before the instance
+    /// starts, or [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn wait_for_orchestration_start(
         &mut self,
         instance_id: &str,
@@ -244,6 +273,11 @@ impl TaskHubGrpcClient {
     }
 
     /// Wait for an orchestration to reach a terminal state.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid,
+    /// [`DurableTaskError::Timeout`] if `timeout` elapses before completion, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn wait_for_orchestration_completion(
         &mut self,
         instance_id: &str,
@@ -282,6 +316,10 @@ impl TaskHubGrpcClient {
     }
 
     /// Raise an event to an orchestration instance.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` or `event_name` is
+    /// invalid, or [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn raise_orchestration_event(
         &mut self,
         instance_id: &str,
@@ -313,6 +351,10 @@ impl TaskHubGrpcClient {
     }
 
     /// Terminate a running orchestration.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn terminate_orchestration(
         &mut self,
         instance_id: &str,
@@ -339,6 +381,10 @@ impl TaskHubGrpcClient {
     }
 
     /// Suspend a running orchestration.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn suspend_orchestration(
         &mut self,
         instance_id: &str,
@@ -359,6 +405,10 @@ impl TaskHubGrpcClient {
     }
 
     /// Resume a suspended orchestration.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn resume_orchestration(
         &mut self,
         instance_id: &str,
@@ -381,6 +431,10 @@ impl TaskHubGrpcClient {
     /// Purge an orchestration's history and state by instance ID.
     ///
     /// Returns the number of deleted instances.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `instance_id` is invalid, or
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn purge_orchestration(&mut self, instance_id: &str, recursive: bool) -> Result<i32> {
         internal::validate_identifier(
             instance_id,
@@ -419,6 +473,9 @@ impl TaskHubGrpcClient {
     /// println!("Deleted {deleted} orchestrations");
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
     pub async fn purge_orchestrations_by_filter(
         &mut self,
         filter: PurgeInstanceFilter,

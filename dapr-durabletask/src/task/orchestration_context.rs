@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -16,21 +16,34 @@ use crate::proto;
 use super::completable_task::CompletableTask;
 use super::options::{ActivityOptions, SubOrchestratorOptions};
 
+pub(crate) fn lock_inner<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Debug)]
+pub(crate) struct ContextConfig {
+    pub(crate) max_event_names: usize,
+    pub(crate) max_events_per_name: usize,
+    pub(crate) max_pending_tasks_per_name: usize,
+    pub(crate) max_json_payload_size: usize,
+}
+
 /// Internal state shared between the context and the orchestration executor.
 pub(crate) struct OrchestrationContextInner {
-    pub(crate) instance_id: String,
+    pub(crate) config: Arc<ContextConfig>,
+    pub(crate) instance_id: Arc<str>,
     pub(crate) current_utc_datetime: chrono::DateTime<chrono::Utc>,
     pub(crate) is_replaying: Arc<AtomicBool>,
     pub(crate) is_complete: bool,
     pub(crate) input: Option<String>,
-    pub(crate) name: String,
+    pub(crate) name: Arc<str>,
     pub(crate) custom_status: Option<String>,
     pub(crate) sequence_number: i32,
     pub(crate) pending_tasks: HashMap<i32, CompletableTask>,
-    pub(crate) pending_event_tasks: HashMap<String, Vec<CompletableTask>>,
+    pub(crate) pending_event_tasks: HashMap<String, VecDeque<CompletableTask>>,
     /// Events buffered while no waiter exists. The `bool` records whether
     /// the originating `EventRaised` event was applied during replay.
-    pub(crate) buffered_events: HashMap<String, Vec<(Option<String>, bool)>>,
+    pub(crate) buffered_events: HashMap<String, VecDeque<(Option<String>, bool)>>,
     pub(crate) pending_actions: Vec<proto::WorkflowAction>,
     pub(crate) completion_status: Option<OrchestrationStatus>,
     pub(crate) completion_result: Option<String>,
@@ -38,10 +51,6 @@ pub(crate) struct OrchestrationContextInner {
     pub(crate) continue_as_new_input: Option<String>,
     pub(crate) save_events_on_continue: bool,
     pub(crate) is_suspended: bool,
-    pub(crate) max_event_names: usize,
-    pub(crate) max_events_per_name: usize,
-    pub(crate) max_pending_tasks_per_name: usize,
-    pub(crate) max_json_payload_size: usize,
     /// Patches recorded as applied in the orchestration history (from `WorkflowStarted` events).
     pub(crate) history_patches: std::collections::HashSet<String>,
     /// Cache of patch decisions made during the current execution.
@@ -52,7 +61,7 @@ pub(crate) struct OrchestrationContextInner {
     pub(crate) history_scheduled_count: i32,
     /// History forwarded from the parent workflow (if any). Populated from
     /// the `WorkflowRequest.propagated_history` field.
-    pub(crate) propagated_history: Option<PropagatedHistory>,
+    pub(crate) propagated_history: Option<Arc<PropagatedHistory>>,
 }
 
 /// The orchestration context provided to orchestrator functions.
@@ -75,14 +84,22 @@ impl OrchestrationContext {
         options: &crate::worker::WorkerOptions,
         event_count_hint: usize,
     ) -> Self {
+        let config = Arc::new(ContextConfig {
+            max_event_names: options.max_event_names,
+            max_events_per_name: options.max_events_per_name,
+            max_pending_tasks_per_name: options.max_pending_tasks_per_name,
+            max_json_payload_size: options.max_json_payload_size,
+        });
+
         Self {
             inner: Arc::new(Mutex::new(OrchestrationContextInner {
-                instance_id,
+                config,
+                instance_id: Arc::<str>::from(instance_id),
                 current_utc_datetime,
                 is_replaying: Arc::new(AtomicBool::new(is_replaying)),
                 is_complete: false,
                 input,
-                name,
+                name: Arc::<str>::from(name),
                 custom_status: None,
                 sequence_number: 0,
                 pending_tasks: HashMap::with_capacity(event_count_hint / 2),
@@ -95,10 +112,6 @@ impl OrchestrationContext {
                 continue_as_new_input: None,
                 save_events_on_continue: false,
                 is_suspended: false,
-                max_event_names: options.max_event_names,
-                max_events_per_name: options.max_events_per_name,
-                max_pending_tasks_per_name: options.max_pending_tasks_per_name,
-                max_json_payload_size: options.max_json_payload_size,
                 history_patches: std::collections::HashSet::new(),
                 applied_patches: HashMap::new(),
                 history_scheduled_count: 0,
@@ -108,44 +121,29 @@ impl OrchestrationContext {
     }
 
     /// Get the instance ID.
-    pub fn instance_id(&self) -> String {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .instance_id
-            .clone()
+    pub fn instance_id(&self) -> Arc<str> {
+        lock_inner(&self.inner).instance_id.clone()
     }
 
     /// Get the current UTC datetime (deterministic, from history events).
     pub fn current_utc_datetime(&self) -> chrono::DateTime<chrono::Utc> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .current_utc_datetime
+        lock_inner(&self.inner).current_utc_datetime
     }
 
     /// Check if the orchestrator is currently replaying.
     pub fn is_replaying(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_replaying
-            .load(Ordering::Acquire)
+        lock_inner(&self.inner).is_replaying.load(Ordering::Acquire)
     }
 
     /// Get the orchestration name.
-    pub fn name(&self) -> String {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .name
-            .clone()
+    pub fn name(&self) -> Arc<str> {
+        lock_inner(&self.inner).name.clone()
     }
 
     /// Get the orchestration input, deserialised from JSON.
-    pub fn get_input<T: DeserializeOwned>(&self) -> crate::api::Result<T> {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        crate::internal::from_json(inner.input.as_deref(), inner.max_json_payload_size)
+    pub fn input<T: DeserializeOwned>(&self) -> crate::api::Result<T> {
+        let inner = lock_inner(&self.inner);
+        crate::internal::from_json(inner.input.as_deref(), inner.config.max_json_payload_size)
     }
 
     /// Returns history forwarded from the parent workflow, if the parent
@@ -153,17 +151,13 @@ impl OrchestrationContext {
     ///
     /// See [`HistoryPropagationScope`] for the parent-side trade-off between
     /// `OwnHistory` and `Lineage`.
-    pub fn propagated_history(&self) -> Option<PropagatedHistory> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .propagated_history
-            .clone()
+    pub fn propagated_history(&self) -> Option<Arc<PropagatedHistory>> {
+        lock_inner(&self.inner).propagated_history.clone()
     }
 
     /// Set a custom status string.
     pub fn set_custom_status(&self, status: impl Into<String>) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         inner.custom_status = Some(status.into());
     }
 
@@ -220,7 +214,7 @@ impl OrchestrationContext {
         app_id: Option<&str>,
         history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
@@ -268,28 +262,30 @@ impl OrchestrationContext {
         name: &str,
         input: impl Serialize,
         options: ActivityOptions,
-    ) -> BoxFuture<'static, crate::api::Result<Option<String>>> {
-        let input_json = match to_json(&input) {
-            Ok(json) => json,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+    ) -> impl std::future::Future<Output = crate::api::Result<Option<String>>> + Send + 'static
+    {
+        let input_json = to_json(&input);
         let name = name.to_string();
         let app_id = options.app_id.clone();
         let scope = options.history_propagation_scope;
         let ctx = self.clone();
 
-        match options.retry_policy {
-            Some(policy) => {
-                let first_attempt_time = ctx.current_utc_datetime();
-                let schedule: Arc<dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync> =
-                    Arc::new(move |c: &OrchestrationContext| {
+        async move {
+            let input_json = input_json?;
+            match options.retry_policy {
+                Some(policy) => {
+                    let first_attempt_time = ctx.current_utc_datetime();
+                    let schedule: Arc<
+                        dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync,
+                    > = Arc::new(move |c: &OrchestrationContext| {
                         c.call_activity_raw(&name, input_json.clone(), app_id.as_deref(), scope)
                     });
-                call_with_retry(ctx, schedule, policy, 0, first_attempt_time)
-            }
-            None => {
-                let task = self.call_activity_raw(&name, input_json, app_id.as_deref(), scope);
-                Box::pin(task)
+                    call_with_retry(ctx, schedule, policy, first_attempt_time).await
+                }
+                None => {
+                    ctx.call_activity_raw(&name, input_json, app_id.as_deref(), scope)
+                        .await
+                }
             }
         }
     }
@@ -364,7 +360,7 @@ impl OrchestrationContext {
         app_id: Option<&str>,
         history_propagation_scope: Option<HistoryPropagationScope>,
     ) -> CompletableTask {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
@@ -422,22 +418,23 @@ impl OrchestrationContext {
         name: &str,
         input: impl Serialize,
         options: SubOrchestratorOptions,
-    ) -> BoxFuture<'static, crate::api::Result<Option<String>>> {
-        let input_json = match to_json(&input) {
-            Ok(json) => json,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
+    ) -> impl std::future::Future<Output = crate::api::Result<Option<String>>> + Send + 'static
+    {
+        let input_json = to_json(&input);
         let name = name.to_string();
         let instance_id = options.instance_id.clone();
         let app_id = options.app_id.clone();
         let scope = options.history_propagation_scope;
         let ctx = self.clone();
 
-        match options.retry_policy {
-            Some(policy) => {
-                let first_attempt_time = ctx.current_utc_datetime();
-                let schedule: Arc<dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync> =
-                    Arc::new(move |c: &OrchestrationContext| {
+        async move {
+            let input_json = input_json?;
+            match options.retry_policy {
+                Some(policy) => {
+                    let first_attempt_time = ctx.current_utc_datetime();
+                    let schedule: Arc<
+                        dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync,
+                    > = Arc::new(move |c: &OrchestrationContext| {
                         c.call_sub_orchestrator_raw(
                             &name,
                             input_json.clone(),
@@ -446,17 +443,18 @@ impl OrchestrationContext {
                             scope,
                         )
                     });
-                call_with_retry(ctx, schedule, policy, 0, first_attempt_time)
-            }
-            None => {
-                let task = self.call_sub_orchestrator_raw(
-                    &name,
-                    input_json,
-                    instance_id.as_deref(),
-                    app_id.as_deref(),
-                    scope,
-                );
-                Box::pin(task)
+                    call_with_retry(ctx, schedule, policy, first_attempt_time).await
+                }
+                None => {
+                    ctx.call_sub_orchestrator_raw(
+                        &name,
+                        input_json,
+                        instance_id.as_deref(),
+                        app_id.as_deref(),
+                        scope,
+                    )
+                    .await
+                }
             }
         }
     }
@@ -464,7 +462,7 @@ impl OrchestrationContext {
     /// Create a durable timer that fires after the specified duration.
     pub fn create_timer(&self, delay: std::time::Duration) -> CompletableTask {
         tracing::debug!(delay_ms = delay.as_millis() as u64, "Creating timer");
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
@@ -501,13 +499,15 @@ impl OrchestrationContext {
     /// Event names are case-insensitive.
     pub fn wait_for_external_event(&self, name: &str) -> CompletableTask {
         tracing::debug!(event_name = %name, "Waiting for external event");
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         let event_name = name.to_lowercase();
 
         if let Some(events) = inner.buffered_events.get_mut(&event_name)
             && !events.is_empty()
         {
-            let (data, during_replay) = events.remove(0);
+            let (data, during_replay) = events
+                .pop_front()
+                .expect("buffered event queue is not empty");
             let task = CompletableTask::new();
             task.set_replay_handle(inner.is_replaying.clone());
             task.complete_with_phase(data, during_replay);
@@ -516,20 +516,20 @@ impl OrchestrationContext {
 
         let task = CompletableTask::new();
         task.set_replay_handle(inner.is_replaying.clone());
-        let max_pending = inner.max_pending_tasks_per_name;
+        let max_pending = inner.config.max_pending_tasks_per_name;
         let pending = inner.pending_event_tasks.entry(event_name).or_default();
         if pending.len() >= max_pending {
             tracing::warn!(event_name = %name, "Pending event task limit reached, discarding wait");
             return task;
         }
-        pending.push(task.clone());
+        pending.push_back(task.clone());
         task
     }
 
     /// Continue the orchestration as new with new input.
     pub fn continue_as_new(&self, input: impl Serialize, save_events: bool) {
         tracing::debug!(save_events = save_events, "Continuing orchestration as new");
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
         inner.continue_as_new_input = to_json(&input).ok().flatten();
         inner.save_events_on_continue = save_events;
     }
@@ -548,7 +548,7 @@ impl OrchestrationContext {
     ///
     /// This matches the behaviour of the Go and Python SDKs.
     pub fn is_patched(&self, patch_name: &str) -> bool {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = lock_inner(&self.inner);
 
         // Return the cached decision from the current execution if available.
         if let Some(&cached) = inner.applied_patches.get(patch_name) {
@@ -625,63 +625,64 @@ fn call_with_retry(
     ctx: OrchestrationContext,
     schedule: Arc<dyn Fn(&OrchestrationContext) -> CompletableTask + Send + Sync>,
     policy: RetryPolicy,
-    attempt: u32,
     first_attempt_time: chrono::DateTime<chrono::Utc>,
 ) -> BoxFuture<'static, crate::api::Result<Option<String>>> {
     Box::pin(async move {
-        let task = schedule(&ctx);
-        match task.await {
-            Ok(v) => Ok(v),
-            Err(DurableTaskError::TaskFailed {
-                message,
-                failure_details,
-            }) => {
-                let details = failure_details.clone().unwrap_or_else(|| FailureDetails {
-                    message: message.clone(),
-                    error_type: "TaskFailed".to_string(),
-                    stack_trace: None,
-                });
-
-                if attempt + 1 >= policy.max_number_of_attempts {
-                    tracing::debug!(
-                        attempt,
-                        max = policy.max_number_of_attempts,
-                        "Max retry attempts reached"
-                    );
-                    return Err(DurableTaskError::TaskFailed {
-                        message,
-                        failure_details,
+        let mut attempt = 0;
+        loop {
+            let task = schedule(&ctx);
+            match task.await {
+                Ok(v) => return Ok(v),
+                Err(DurableTaskError::TaskFailed {
+                    message,
+                    failure_details,
+                }) => {
+                    let details = failure_details.clone().unwrap_or_else(|| FailureDetails {
+                        message: message.clone(),
+                        error_type: "TaskFailed".to_string(),
+                        stack_trace: None,
                     });
-                }
 
-                let current_time = ctx.current_utc_datetime();
-                let delay = match compute_retry_delay(
-                    &policy,
-                    attempt,
-                    first_attempt_time,
-                    current_time,
-                    &details,
-                ) {
-                    Some(d) => d,
-                    None => {
-                        tracing::debug!(attempt, "Retry predicate or timeout prevented retry");
+                    if attempt + 1 >= policy.max_number_of_attempts {
+                        tracing::debug!(
+                            attempt,
+                            max = policy.max_number_of_attempts,
+                            "Max retry attempts reached"
+                        );
                         return Err(DurableTaskError::TaskFailed {
                             message,
                             failure_details,
                         });
                     }
-                };
 
-                tracing::debug!(
-                    attempt,
-                    delay_ms = delay.as_millis(),
-                    "Scheduling retry timer"
-                );
-                ctx.create_timer(delay).await?;
+                    let current_time = ctx.current_utc_datetime();
+                    let delay = match compute_retry_delay(
+                        &policy,
+                        attempt,
+                        first_attempt_time,
+                        current_time,
+                        &details,
+                    ) {
+                        Some(d) => d,
+                        None => {
+                            tracing::debug!(attempt, "Retry predicate or timeout prevented retry");
+                            return Err(DurableTaskError::TaskFailed {
+                                message,
+                                failure_details,
+                            });
+                        }
+                    };
 
-                call_with_retry(ctx, schedule, policy, attempt + 1, first_attempt_time).await
+                    tracing::debug!(
+                        attempt,
+                        delay_ms = delay.as_millis(),
+                        "Scheduling retry timer"
+                    );
+                    ctx.create_timer(delay).await?;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
     })
 }
@@ -705,15 +706,15 @@ mod tests {
     #[test]
     fn test_basic_accessors() {
         let ctx = make_ctx();
-        assert_eq!(ctx.instance_id(), "inst-1");
-        assert_eq!(ctx.name(), "my_orch");
+        assert_eq!(ctx.instance_id().as_ref(), "inst-1");
+        assert_eq!(ctx.name().as_ref(), "my_orch");
         assert!(!ctx.is_replaying());
     }
 
     #[test]
-    fn test_get_input() {
+    fn test_input() {
         let ctx = make_ctx();
-        let input: String = ctx.get_input().unwrap();
+        let input: String = ctx.input().unwrap();
         assert_eq!(input, "hello");
     }
 
@@ -804,7 +805,7 @@ mod tests {
                 .buffered_events
                 .entry("approval".to_string())
                 .or_default()
-                .push((Some("\"yes\"".to_string()), true));
+                .push_back((Some("\"yes\"".to_string()), true));
         }
 
         let task = ctx.wait_for_external_event("APPROVAL"); // case-insensitive

@@ -14,13 +14,21 @@ use dapr_durabletask::client::TaskHubGrpcClient;
 use dapr_durabletask::worker::TaskHubGrpcWorker;
 
 /// Locate the sidecar binary, checking `DURABLETASK_SIDECAR_BIN` first,
-/// then falling back to `<workspace>/tmp/durabletask-sidecar`.
+/// then falling back to package and workspace `tmp/durabletask-sidecar` paths.
 pub fn sidecar_bin() -> Option<String> {
-    let bin = std::env::var("DURABLETASK_SIDECAR_BIN").unwrap_or_else(|_| {
-        let workspace = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        format!("{workspace}/tmp/durabletask-sidecar")
-    });
-    std::path::Path::new(&bin).exists().then_some(bin)
+    if let Ok(bin) = std::env::var("DURABLETASK_SIDECAR_BIN")
+        && std::path::Path::new(&bin).exists()
+    {
+        return Some(bin);
+    }
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    [
+        format!("{manifest_dir}/tmp/durabletask-sidecar"),
+        format!("{manifest_dir}/../tmp/durabletask-sidecar"),
+    ]
+    .into_iter()
+    .find(|bin| std::path::Path::new(bin).exists())
 }
 
 /// Ask the OS for an ephemeral free port.

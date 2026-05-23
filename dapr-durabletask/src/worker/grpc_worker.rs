@@ -149,7 +149,7 @@ impl TaskHubGrpcWorker {
                         self.options.reconnect_policy.max_attempts.unwrap_or(0)
                     );
                     tracing::error!("{}", msg);
-                    return Err(DurableTaskError::Other(msg));
+                    return Err(DurableTaskError::ConnectionFailed(msg));
                 }
                 Some(delay) => {
                     tracing::info!(
@@ -173,12 +173,12 @@ impl TaskHubGrpcWorker {
         const USER_AGENT: &str = concat!("dapr-durabletask/rust/", env!("CARGO_PKG_VERSION"));
 
         Channel::from_shared(address.to_string())
-            .map_err(|e| DurableTaskError::Other(format!("Invalid address: {e}")))?
+            .map_err(|e| DurableTaskError::InvalidAddress(format!("Invalid address: {e}")))?
             .user_agent(USER_AGENT)
-            .map_err(|e| DurableTaskError::Other(format!("Invalid user agent: {e}")))?
+            .map_err(|e| DurableTaskError::InvalidAddress(format!("Invalid user agent: {e}")))?
             .connect()
             .await
-            .map_err(|e| DurableTaskError::Other(format!("Connection failed: {e}")))
+            .map_err(|e| DurableTaskError::ConnectionFailed(format!("Connection failed: {e}")))
     }
 
     async fn run_work_loop(
@@ -214,12 +214,12 @@ impl TaskHubGrpcWorker {
                             break false;
                         }
                         Some(Err(e)) => {
-                            return Err(DurableTaskError::Other(format!("Stream error: {e}")));
+                            return Err(DurableTaskError::ConnectionFailed(format!("Stream error: {e}")));
                         }
                         Some(Ok(work_item)) => {
                             Self::dispatch_work_item(
                                 work_item,
-                                client,
+                                client.clone(),
                                 registry,
                                 options,
                                 &semaphore,
@@ -247,7 +247,7 @@ impl TaskHubGrpcWorker {
             Ok(())
         } else {
             // Stream closed by sidecar — signal the caller to reconnect.
-            Err(DurableTaskError::Other(
+            Err(DurableTaskError::ConnectionFailed(
                 "Work item stream closed by sidecar".into(),
             ))
         }
@@ -256,7 +256,7 @@ impl TaskHubGrpcWorker {
     /// Validate and dispatch a single work item into the `JoinSet`.
     async fn dispatch_work_item(
         work_item: proto::WorkItem,
-        client: &TaskHubSidecarServiceClient<Channel>,
+        client: TaskHubSidecarServiceClient<Channel>,
         registry: &Arc<Registry>,
         options: &Arc<WorkerOptions>,
         semaphore: &Arc<Semaphore>,
@@ -284,13 +284,13 @@ impl TaskHubGrpcWorker {
 
                 let registry = registry.clone();
                 let options = options.clone();
-                let mut stub = client.clone();
+                let mut stub = client;
                 let completion_token = work_item.completion_token.clone();
                 let permit = semaphore
                     .clone()
                     .acquire_owned()
                     .await
-                    .map_err(|_| DurableTaskError::Other("Semaphore closed".to_string()))?;
+                    .map_err(|_| DurableTaskError::Internal("Semaphore closed".to_string()))?;
 
                 tasks.spawn(async move {
                     let _permit = permit;
@@ -301,6 +301,7 @@ impl TaskHubGrpcWorker {
                         &options,
                     )
                     .await;
+                    // TODO: migrate to complete_work_item once sidecar supports it.
                     #[allow(deprecated)]
                     if let Err(e) = stub.complete_orchestrator_task(response).await {
                         tracing::error!(
@@ -326,14 +327,14 @@ impl TaskHubGrpcWorker {
 
                 let registry = registry.clone();
                 let options = options.clone();
-                let mut stub = client.clone();
+                let mut stub = client;
                 let completion_token = work_item.completion_token.clone();
                 let activity_name = req.name.clone();
                 let permit = semaphore
                     .clone()
                     .acquire_owned()
                     .await
-                    .map_err(|_| DurableTaskError::Other("Semaphore closed".to_string()))?;
+                    .map_err(|_| DurableTaskError::Internal("Semaphore closed".to_string()))?;
 
                 tasks.spawn(async move {
                     let _permit = permit;

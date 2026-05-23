@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use super::{DurableTaskError, FailureDetails, OrchestrationStatus};
+use crate::internal::from_timestamp;
 use crate::proto;
 
 /// Snapshot of an orchestration instance's current state.
@@ -19,6 +20,10 @@ pub struct OrchestrationState {
 
 /// Error returned when converting a `GetInstanceResponse` to an `OrchestrationState`
 /// when the instance does not exist or has no workflow state.
+///
+/// This is the dedicated `TryFrom` error type. At the client API boundary it is
+/// typically wrapped into [`DurableTaskError::InstanceNotFound`] with the
+/// caller-known instance ID attached.
 #[derive(Debug, Clone)]
 pub struct InstanceNotFound;
 
@@ -40,11 +45,11 @@ impl TryFrom<&proto::GetInstanceResponse> for OrchestrationState {
             name: state.name.clone(),
             runtime_status: OrchestrationStatus::try_from(state.workflow_status)
                 .unwrap_or(OrchestrationStatus::Running),
-            created_at: state.created_timestamp.as_ref().map(timestamp_to_datetime),
+            created_at: state.created_timestamp.as_ref().and_then(from_timestamp),
             last_updated_at: state
                 .last_updated_timestamp
                 .as_ref()
-                .map(timestamp_to_datetime),
+                .and_then(from_timestamp),
             serialized_input: state.input.clone(),
             serialized_output: state.output.clone(),
             serialized_custom_status: state.custom_status.clone(),
@@ -73,13 +78,9 @@ impl OrchestrationState {
     }
 }
 
-fn timestamp_to_datetime(ts: &crate::proto::prost_types::Timestamp) -> DateTime<Utc> {
-    let nanos = if ts.nanos >= 0 && ts.nanos <= 999_999_999 {
-        ts.nanos as u32
-    } else {
-        0
-    };
-    DateTime::from_timestamp(ts.seconds, nanos).unwrap_or_default()
+#[cfg(test)]
+fn timestamp_to_datetime(ts: &crate::proto::prost_types::Timestamp) -> Option<DateTime<Utc>> {
+    from_timestamp(ts)
 }
 
 #[cfg(test)]
@@ -122,31 +123,27 @@ mod tests {
             seconds: 1_700_000_000,
             nanos: 500_000_000,
         };
-        let dt = timestamp_to_datetime(&ts);
+        let dt = timestamp_to_datetime(&ts).expect("valid timestamp");
         assert_eq!(dt.timestamp(), 1_700_000_000);
         assert_eq!(dt.timestamp_subsec_nanos(), 500_000_000);
     }
 
     #[test]
-    fn timestamp_negative_nanos_clamps_to_zero() {
+    fn timestamp_negative_nanos_returns_none() {
         let ts = Timestamp {
             seconds: 1_700_000_000,
             nanos: -1,
         };
-        let dt = timestamp_to_datetime(&ts);
-        assert_eq!(dt.timestamp(), 1_700_000_000);
-        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+        assert!(timestamp_to_datetime(&ts).is_none());
     }
 
     #[test]
-    fn timestamp_overflow_nanos_clamps_to_zero() {
+    fn timestamp_overflow_nanos_returns_none() {
         let ts = Timestamp {
             seconds: 1_700_000_000,
             nanos: 1_000_000_000,
         };
-        let dt = timestamp_to_datetime(&ts);
-        assert_eq!(dt.timestamp(), 1_700_000_000);
-        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+        assert!(timestamp_to_datetime(&ts).is_none());
     }
 
     #[test]
@@ -155,7 +152,7 @@ mod tests {
             seconds: -1,
             nanos: 0,
         };
-        let dt = timestamp_to_datetime(&ts);
+        let dt = timestamp_to_datetime(&ts).expect("valid");
         assert_eq!(dt.timestamp(), -1);
     }
 
