@@ -22,7 +22,7 @@
         # Accepted values:
         #   - "nightly"  → latest nightly (with extensions)
         #   - "stable"   → latest stable
-        #   - "1.85.0"   → that exact stable release (MSRV)
+        #   - "1.88.0"   → that exact stable release (MSRV)
         mkRustToolchain = rustVersion:
           if rustVersion == "nightly" then
             pkgs.rust-bin.selectLatestNightlyWith (toolchain:
@@ -90,10 +90,10 @@
       {
         # Named devShells let CI select a Rust toolchain via
         # `nix develop .#<name>` without touching the host's rustup.
-        # The default shell pins MSRV (1.85).
+        # The default shell pins MSRV (1.88).
         devShells = {
-          default = mkDevShell "1.85.0";
-          msrv = mkDevShell "1.85.0";
+          default = mkDevShell "1.88.0";
+          msrv = mkDevShell "1.88.0";
           stable = mkDevShell "stable";
           nightly = mkDevShell "nightly";
         };
