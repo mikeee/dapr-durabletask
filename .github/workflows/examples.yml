@@ -1,0 +1,84 @@
+name: Examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  examples:
+    name: Run example (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - activity_sequence
+          - fanout_fanin
+          - human_interaction
+          - workflow_history_propagation
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: ${{ runner.os }}-stable-examples
+          key: examples
+          cache-on-failure: true
+
+      - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Start durabletask-go sidecar
+        run: |
+          nix develop .#stable --command bash -c '
+            set -euo pipefail
+            nohup "$DURABLETASK_SIDECAR_BIN" --port 4001 >sidecar.log 2>&1 &
+            echo $! > sidecar.pid
+            disown || true
+            for _ in $(seq 1 40); do
+              if (echo >/dev/tcp/127.0.0.1/4001) 2>/dev/null; then
+                echo "Sidecar ready on :4001"
+                exit 0
+              fi
+              sleep 0.25
+            done
+            echo "Sidecar failed to start" >&2
+            cat sidecar.log >&2
+            exit 1
+          '
+
+      - name: Run example
+        run: |
+          nix develop .#stable --command bash -c '
+            DURABLETASK_SKIP_SIDECAR=1 \
+            timeout 120s cargo run -p dapr-durabletask --example ${{ matrix.example }}
+          '
+        env:
+          DURABLETASK_SKIP_SIDECAR: "1"
+          RUST_LOG: info
+
+      - name: Stop sidecar
+        if: always()
+        run: |
+          if [ -f sidecar.pid ]; then
+            kill "$(cat sidecar.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload sidecar log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sidecar-log-${{ matrix.example }}
+          path: sidecar.log
+          if-no-files-found: ignore
