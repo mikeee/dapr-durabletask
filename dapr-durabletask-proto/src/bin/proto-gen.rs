@@ -61,10 +61,7 @@ fn fetch_protos(proto_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Er
         if src.extension().and_then(|e| e.to_str()) != Some("proto") {
             continue;
         }
-        let file_name = src
-            .file_name()
-            .ok_or("proto file has no name")?
-            .to_owned();
+        let file_name = src.file_name().ok_or("proto file has no name")?.to_owned();
         let dst = proto_dir.join(&file_name);
         std::fs::copy(&src, &dst)?;
         println!("  {} → {}", src.display(), dst.display());
