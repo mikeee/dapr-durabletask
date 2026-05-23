@@ -56,7 +56,7 @@ async fn audit_log(ctx: ActivityContext, input: Option<String>) -> ActivityResul
         println!("[audit_log] no propagated history attached");
     }
     let entry: String = serde_json::from_str(input.as_deref().unwrap_or("\"\""))?;
-    println!("[audit_log] {}", entry);
+    println!("[audit_log] {entry}");
     Ok(Some(serde_json::to_string(&"logged")?))
 }
 

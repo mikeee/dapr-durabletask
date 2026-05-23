@@ -973,7 +973,7 @@ mod tests {
                 );
                 assert!(cw.result.is_none());
             }
-            other => panic!("expected CompleteWorkflow, got {:?}", other),
+            other => panic!("expected CompleteWorkflow, got {other:?}"),
         }
     }
 

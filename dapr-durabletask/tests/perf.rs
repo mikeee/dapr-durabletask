@@ -120,7 +120,7 @@ async fn run_sustained(
         scheduled += 1;
 
         // Every 64 schedules, sweep for completions to bound memory.
-        if scheduled % 64 == 0 {
+        if scheduled.is_multiple_of(64) {
             drain_completed(client, &mut pending, &mut latencies).await;
         }
     }
@@ -211,7 +211,7 @@ impl PerfResult {
         let p99 = self.percentile(99.0);
         eprintln!();
         eprintln!("┌─────────────────────────────────────────────────────────┐");
-        eprintln!("│ {:<55} │", label);
+        eprintln!("│ {label:<55} │");
         eprintln!("├─────────────────────────────────────────────────────────┤");
         eprintln!(
             "│  Executions:  {:<8}                                 │",
@@ -224,10 +224,7 @@ impl PerfResult {
                 self.executions as f64 / sched.as_secs_f64()
             );
         }
-        eprintln!(
-            "│  Wall time:   {:>8.2}s                                 │",
-            secs
-        );
+        eprintln!("│  Wall time:   {secs:>8.2}s                                 │");
         eprintln!(
             "│  Throughput:  {:>8.1} workflows/s                     │",
             self.throughput()
@@ -256,16 +253,13 @@ impl PerfResult {
         let p99 = self.percentile(99.0);
         eprintln!();
         eprintln!("┌─────────────────────────────────────────────────────────┐");
-        eprintln!("│ {:<55} │", label);
+        eprintln!("│ {label:<55} │");
         eprintln!("├─────────────────────────────────────────────────────────┤");
         eprintln!(
             "│  Orchestrations: {:<8}                              │",
             self.executions
         );
-        eprintln!(
-            "│  Activities:     {:<8}                              │",
-            total_activities
-        );
+        eprintln!("│  Activities:     {total_activities:<8}                              │");
         if let Some(sched) = self.schedule_elapsed {
             eprintln!(
                 "│  Schedule:       {:>8.2}s ({:>6.0} sched/s)            │",
@@ -273,10 +267,7 @@ impl PerfResult {
                 self.executions as f64 / sched.as_secs_f64()
             );
         }
-        eprintln!(
-            "│  Wall time:      {:>8.2}s                              │",
-            secs
-        );
+        eprintln!("│  Wall time:      {secs:>8.2}s                              │");
         eprintln!(
             "│  Orch/s:         {:>8.1}                              │",
             self.throughput()
