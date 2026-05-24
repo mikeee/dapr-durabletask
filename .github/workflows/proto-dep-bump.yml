@@ -53,8 +53,8 @@ jobs:
             if (!nextVersion) throw new Error('missing NEW env var');
 
             const source = fs.readFileSync(file, 'utf8');
-            const pattern = /(dapr-durabletask-proto\s*=\s*\{[^}]*?version\s*=\s*")([^"]+)(")/s;
-            const matches = [...source.matchAll(new RegExp(pattern.source, pattern.flags))];
+            const pattern = /(dapr-durabletask-proto\s*=\s*\{[^}]*?version\s*=\s*")([^"]+)(")/gs;
+            const matches = [...source.matchAll(pattern)];
 
             if (matches.length !== 1) {
               throw new Error(`expected exactly 1 match, got ${matches.length}`);
