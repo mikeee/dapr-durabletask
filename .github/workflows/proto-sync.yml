@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 6 * * *" # daily at 06:00 UTC
   workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "dapr/durabletask-protobuf tag to sync to (e.g. v0.4.0). Leave blank to use the latest release."
+        required: false
+        type: string
+        default: ""
   pull_request:
     types: [closed]
   check_suite:
@@ -38,20 +44,32 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Resolve latest upstream tag
+      - name: Resolve upstream tag
         id: upstream
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INPUT_TAG: ${{ inputs.upstream_tag }}
         run: |
           set -euo pipefail
-          tag="$(gh release view \
-            --repo dapr/durabletask-protobuf \
-            --json tagName --jq .tagName)"
-          if [ -z "$tag" ]; then
-            echo "::error::Could not resolve latest tag of dapr/durabletask-protobuf"
-            exit 1
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+            echo "Using user-supplied upstream tag: $tag"
+            if ! gh release view "$tag" \
+                --repo dapr/durabletask-protobuf \
+                --json tagName --jq .tagName >/dev/null 2>&1; then
+              echo "::error::Tag '$tag' does not exist as a release in dapr/durabletask-protobuf"
+              exit 1
+            fi
+          else
+            tag="$(gh release view \
+              --repo dapr/durabletask-protobuf \
+              --json tagName --jq .tagName)"
+            if [ -z "$tag" ]; then
+              echo "::error::Could not resolve latest tag of dapr/durabletask-protobuf"
+              exit 1
+            fi
+            echo "Using latest upstream tag: $tag"
           fi
-          echo "Upstream tag: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Drift gate (fetch upstream protos at tag)
