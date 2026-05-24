@@ -1,0 +1,291 @@
+name: Proto sync
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+  check_suite:
+    types: [completed]
+
+permissions:
+  contents: read
+
+env:
+  NIX_CONFIG: "access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
+
+jobs:
+  # Check for new tags in the upstream `dapr/durabletask-protobuf` repo
+  sync:
+    name: Sync from upstream
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_APP_PRIVATE_KEY }}
+
+      - name: Mask App token
+        run: echo "::add-mask::${{ steps.app-token.outputs.token }}"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Resolve latest upstream tag
+        id: upstream
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view \
+            --repo dapr/durabletask-protobuf \
+            --json tagName --jq .tagName)"
+          if [ -z "$tag" ]; then
+            echo "::error::Could not resolve latest tag of dapr/durabletask-protobuf"
+            exit 1
+          fi
+          echo "Upstream tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Drift gate (fetch upstream protos at tag)
+        id: drift
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/upstream-protos
+          base="https://raw.githubusercontent.com/dapr/durabletask-protobuf/${UPSTREAM_TAG}/protos"
+          # Mirror whatever .proto files exist locally so the diff is symmetrical.
+          for f in proto/*.proto; do
+            name="$(basename "$f")"
+            curl -fsSL "$base/$name" -o "/tmp/upstream-protos/$name" || true
+          done
+          if diff -rq proto/ /tmp/upstream-protos/ >/dev/null 2>&1; then
+            echo "No drift vs upstream $UPSTREAM_TAG"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        if: steps.drift.outputs.drift == 'true'
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+            experimental-features = nix-command flakes
+
+      - name: Prefetch flake inputs (with retry)
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if nix flake archive --json >/dev/null; then
+              echo "Flake inputs fetched on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Flake fetch attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to prefetch flake inputs after 5 attempts"
+          exit 1
+
+      - name: Regenerate proto sources
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          PROTO_REF: ${{ steps.upstream.outputs.tag }}
+        run: |
+          nix develop .#stable --command bash -c \
+            'cargo run -p dapr-durabletask-proto --features generate --bin proto-gen'
+
+      - name: Patch-bump dapr-durabletask-proto version
+        id: bump
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          set -euo pipefail
+          file="dapr-durabletask-proto/Cargo.toml"
+          current="$(grep -m1 '^version' "$file" | sed -E 's/.*"([^"]+)".*/\1/')"
+          IFS='.' read -r major minor patch <<<"$current"
+          next="${major}.${minor}.$((patch + 1))"
+          sed -i -E "0,/^version = \"${current}\"/s//version = \"${next}\"/" "$file"
+          echo "Bumped dapr-durabletask-proto: $current -> $next"
+          echo "old=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$next"     >> "$GITHUB_OUTPUT"
+
+      - name: Open or update sync PR
+        if: steps.drift.outputs.drift == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: auto/proto-sync-${{ steps.upstream.outputs.tag }}
+          base: main
+          commit-message: |
+            chore(proto): sync to dapr/durabletask-protobuf ${{ steps.upstream.outputs.tag }}
+
+            Regenerated proto sources and patch-bumped dapr-durabletask-proto
+            ${{ steps.bump.outputs.old }} -> ${{ steps.bump.outputs.new }}.
+          title: "chore(proto): sync to dapr/durabletask-protobuf ${{ steps.upstream.outputs.tag }}"
+          body: |
+            Automated proto sync against upstream tag **${{ steps.upstream.outputs.tag }}**.
+
+            - Updated `proto/` and regenerated `dapr-durabletask-proto/src/generated/`.
+            - Bumped `dapr-durabletask-proto`: `${{ steps.bump.outputs.old }}` → `${{ steps.bump.outputs.new }}`.
+
+            Downstream `dapr-durabletask` tests **may fail** until the
+            follow-up `auto/bump-proto-dep-${{ steps.bump.outputs.new }}` PR
+            (opened by `proto-dep-bump.yml` after this PR's tag is published) is
+            merged. This PR is intended to be force-merged; an issue listing any
+            failing checks will be opened automatically.
+
+            When merged, this workflow will push tag
+            `dapr-durabletask-proto-v${{ steps.bump.outputs.new }}`,
+            which triggers `publish-dapr-durabletask-proto.yml`.
+          labels: proto-sync
+          reviewers: mikeee
+          delete-branch: true
+
+  # Post-merge, will automatically tag the new version of `dapr-durabletask-proto` so it can be published
+  auto-tag:
+    name: Auto-tag dapr-durabletask-proto
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'proto-sync')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_APP_PRIVATE_KEY }}
+
+      - name: Mask App token
+        run: echo "::add-mask::${{ steps.app-token.outputs.token }}"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Push dapr-durabletask-proto-v<version> tag
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version' dapr-durabletask-proto/Cargo.toml \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          tag="dapr-durabletask-proto-v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists; skipping."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" "${MERGE_SHA}" -m "Release ${tag}"
+          git push origin "refs/tags/${tag}"
+          echo "Pushed ${tag}"
+
+  # Handle errors on sync failures
+  failure-issue:
+    name: Track sync PR check failures
+    if: >-
+      github.event_name == 'check_suite' &&
+      github.event.check_suite.conclusion == 'failure' &&
+      github.event.check_suite.pull_requests[0] != null
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_APP_PRIVATE_KEY }}
+
+      - name: Mask App token
+        run: echo "::add-mask::${{ steps.app-token.outputs.token }}"
+
+      - name: Open / update failure issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const pr = context.payload.check_suite.pull_requests[0];
+            const { data: prFull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+            const labels = (prFull.labels || []).map(l => l.name);
+            if (!labels.includes('proto-sync')) {
+              core.info(`PR #${pr.number} is not labeled proto-sync; skipping`);
+              return;
+            }
+
+            const branch = prFull.head.ref;
+            const tagMatch = branch.match(/^auto\/proto-sync-(.+)$/);
+            const upstreamTag = tagMatch ? tagMatch[1] : 'unknown';
+            const title = `Proto sync ${upstreamTag}: downstream test failures`;
+
+            const { data: runs } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: prFull.head.sha,
+              per_page: 100,
+            });
+            const failed = runs.check_runs
+              .filter(r => r.conclusion === 'failure')
+              .map(r => `- [${r.name}](${r.html_url})`)
+              .join('\n') || '- (no failed check runs found)';
+
+            const body = [
+              `Automated tracker for downstream test failures on proto-sync PR #${pr.number}.`,
+              ``,
+              `**Upstream tag:** \`${upstreamTag}\``,
+              `**Head SHA:** \`${prFull.head.sha}\``,
+              ``,
+              `### Failing checks`,
+              failed,
+              ``,
+              `Resolve once the follow-up \`auto/bump-proto-dep-*\` PR lands and CI is green.`,
+            ].join('\n');
+
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'proto-sync-failure',
+              per_page: 100,
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+              core.info(`Updated existing issue #${match.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['proto-sync-failure'],
+              });
+              core.info(`Created issue #${created.number}`);
+            }

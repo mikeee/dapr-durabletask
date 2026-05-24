@@ -14,6 +14,27 @@ env:
   NIX_CONFIG: "access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
 
 jobs:
+  proto-version-drift:
+    name: Proto version drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Compare dapr-durabletask-proto versions
+        run: |
+          set -euo pipefail
+          proto_version="$(grep -m1 '^version' dapr-durabletask-proto/Cargo.toml \
+            | sed -E 's/.*"([^"]+)".*/\1/')"
+          declared_version="$(grep -m1 'dapr-durabletask-proto[[:space:]]*=' dapr-durabletask/Cargo.toml \
+            | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+          echo "dapr-durabletask-proto (Cargo.toml):                $proto_version"
+          echo "dapr-durabletask -> dapr-durabletask-proto dep ref: $declared_version"
+          if [ "$proto_version" != "$declared_version" ]; then
+            echo "::error::Version drift: dapr-durabletask depends on dapr-durabletask-proto $declared_version but the crate is now at $proto_version. Wait for or merge the open auto/bump-proto-dep-${proto_version} PR before merging changes to main."
+            exit 1
+          fi
+          echo "Proto crate version and dapr-durabletask dependency reference are in sync."
+
   ci:
     name: ${{ matrix.name }} (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
