@@ -7,14 +7,22 @@ const PROTO_BRANCH: &str = "main";
 /// Subdirectory inside the upstream repo containing the `.proto` files.
 const UPSTREAM_PROTO_SUBDIR: &str = "protos";
 
+/// Read the upstream ref to clone (branch or tag). Defaults to [`PROTO_BRANCH`]
+/// but can be overridden via the `PROTO_REF` environment variable, e.g. when
+/// pinning to a specific upstream release tag during a scheduled sync.
+fn proto_ref() -> String {
+    std::env::var("PROTO_REF").unwrap_or_else(|_| PROTO_BRANCH.to_string())
+}
+
 /// Shallow-clone the upstream proto repository and mirror *every* `.proto`
 /// file from `protos/` into the workspace `proto/` directory, replacing any
 /// existing copies. Returns the list of mirrored proto file names.
 fn fetch_protos(proto_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let tmp_dir = tempfile::tempdir()?;
     let clone_dir = tmp_dir.path().join("durabletask-protobuf");
+    let git_ref = proto_ref();
 
-    println!("Fetching protos from {PROTO_REPO} @ {PROTO_BRANCH}");
+    println!("Fetching protos from {PROTO_REPO} @ {git_ref}");
 
     let status = Command::new("git")
         .args([
@@ -22,7 +30,7 @@ fn fetch_protos(proto_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Er
             "--depth",
             "1",
             "--branch",
-            PROTO_BRANCH,
+            &git_ref,
             "--single-branch",
             PROTO_REPO,
             clone_dir.to_str().unwrap(),

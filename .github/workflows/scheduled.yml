@@ -13,29 +13,6 @@ env:
   NIX_CONFIG: "access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
 
 jobs:
-  proto-drift:
-    name: Proto drift check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Fetch upstream protos
-        run: |
-          mkdir -p /tmp/upstream-protos
-          for f in history_events.proto orchestration.proto orchestrator_actions.proto orchestrator_service.proto; do
-            curl -fsSL "https://raw.githubusercontent.com/dapr/durabletask-protobuf/main/protos/$f" \
-              -o "/tmp/upstream-protos/$f"
-          done
-
-      - name: Compare protos
-        run: |
-          if ! diff -rq proto/ /tmp/upstream-protos/; then
-            echo "::error::Proto files have diverged from dapr/durabletask-protobuf main"
-            diff -ru proto/ /tmp/upstream-protos/ || true
-            exit 1
-          fi
-          echo "Proto files are in sync with upstream"
-
   check:
     name: ${{ matrix.name }} (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
