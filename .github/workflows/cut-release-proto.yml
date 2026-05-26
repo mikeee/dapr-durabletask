@@ -1,0 +1,109 @@
+name: Cut release (dapr-durabletask-proto)
+
+# Cut a patch release from a `release-proto-MAJOR.MINOR` branch.
+#
+# Trigger this workflow with `workflow_dispatch` while on a branch named
+# `release-proto-MAJOR.MINOR` (e.g. `release-proto-0.0`). It will:
+#
+#   1. Verify the branch name matches `release-proto-MAJOR.MINOR`.
+#   2. Verify `dapr-durabletask-proto/Cargo.toml` is currently on the
+#      `MAJOR.MINOR.*` line.
+#   3. Bump the patch component, commit the change to the release branch,
+#      tag the bump commit `dapr-durabletask-proto-vMAJOR.MINOR.PATCH+1`,
+#      and push both.
+#
+# The push of `dapr-durabletask-proto-v*` is what fires
+# `publish-dapr-durabletask-proto.yml` (publish to crates.io + GitHub
+# Release) and `proto-dep-bump.yml` (open the downstream dep-bump PR).
+# This workflow itself does not publish.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cut:
+    name: Cut patch release from ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify branch name
+        id: branch
+        env:
+          BRANCH: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF#refs/heads/}" = "$REF" ]; then
+            echo "::error::cut-release must be dispatched on a branch, not a tag (ref=$REF)"
+            exit 1
+          fi
+          if ! [[ "$BRANCH" =~ ^release-proto-([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::cut-release must run on a release-proto-MAJOR.MINOR branch (got '$BRANCH')"
+            exit 1
+          fi
+          echo "major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "minor=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_APP_PRIVATE_KEY }}
+
+      - name: Mask App token
+        run: echo "::add-mask::${{ steps.app-token.outputs.token }}"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Compute next patch version
+        id: ver
+        env:
+          MAJOR: ${{ steps.branch.outputs.major }}
+          MINOR: ${{ steps.branch.outputs.minor }}
+        run: |
+          set -euo pipefail
+          file="dapr-durabletask-proto/Cargo.toml"
+          current="$(grep -m1 '^version' "$file" | sed -E 's/.*"([^"]+)".*/\1/')"
+          IFS='.' read -r cur_major cur_minor cur_patch <<<"$current"
+          if [ "$cur_major" != "$MAJOR" ] || [ "$cur_minor" != "$MINOR" ]; then
+            echo "::error::dapr-durabletask-proto/Cargo.toml version ($current) is not on the ${MAJOR}.${MINOR}.* line for branch release-proto-${MAJOR}.${MINOR}"
+            exit 1
+          fi
+          next="${MAJOR}.${MINOR}.$((cur_patch + 1))"
+          tag="dapr-durabletask-proto-v${next}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists; bump Cargo.toml manually or delete the stale tag"
+            exit 1
+          fi
+          sed -i -E "0,/^version = \"${current}\"/s//version = \"${next}\"/" "$file"
+          grep -m1 '^version' "$file"
+          echo "old=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$next"     >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"      >> "$GITHUB_OUTPUT"
+
+      - name: Commit, tag, and push
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OLD: ${{ steps.ver.outputs.old }}
+          NEW: ${{ steps.ver.outputs.new }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dapr-durabletask-proto/Cargo.toml
+          git commit -m "chore(release): dapr-durabletask-proto ${OLD} -> ${NEW}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "HEAD:${BRANCH}"
+          git push origin "refs/tags/${TAG}"
+          echo "Pushed ${TAG} on ${BRANCH}"
