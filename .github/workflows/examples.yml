@@ -14,17 +14,48 @@ env:
   NIX_CONFIG: "access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}"
 
 jobs:
+  discover-examples:
+    name: Discover examples
+    runs-on: ubuntu-latest
+    outputs:
+      examples: ${{ steps.examples.outputs.examples }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Build examples matrix
+        id: examples
+        run: |
+          set -euo pipefail
+          examples="$(
+            cargo metadata --locked --no-deps --format-version 1 \
+              | python3 -c '
+          import json
+          import sys
+
+          metadata = json.load(sys.stdin)
+          examples = sorted(
+              target["name"]
+              for package in metadata["packages"]
+              if package["name"] == "dapr-durabletask"
+              for target in package["targets"]
+              if "example" in target["kind"]
+          )
+          if not examples:
+              raise SystemExit("No dapr-durabletask examples found")
+          print(json.dumps(examples))
+          '
+          )"
+          echo "examples=${examples}" >> "$GITHUB_OUTPUT"
+          echo "Discovered examples: ${examples}"
+
   examples:
     name: Run example (${{ matrix.example }})
     runs-on: ubuntu-latest
+    needs: discover-examples
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - activity_sequence
-          - fanout_fanin
-          - human_interaction
-          - workflow_history_propagation
+        example: ${{ fromJSON(needs.discover-examples.outputs.examples) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -58,31 +89,32 @@ jobs:
 
       - name: Start durabletask-go sidecar
         run: |
-          nix develop .#stable --command bash -c '
-            set -euo pipefail
-            nohup "$DURABLETASK_SIDECAR_BIN" --port 4001 >sidecar.log 2>&1 &
-            echo $! > sidecar.pid
-            disown || true
-            for _ in $(seq 1 40); do
-              if (echo >/dev/tcp/127.0.0.1/4001) 2>/dev/null; then
-                echo "Sidecar ready on :4001"
-                exit 0
-              fi
-              sleep 0.25
-            done
-            echo "Sidecar failed to start" >&2
-            cat sidecar.log >&2
-            exit 1
-          '
+          nix develop .#stable --command bash <<'BASH'
+          set -euo pipefail
+          nohup "$DURABLETASK_SIDECAR_BIN" --port 4001 >sidecar.log 2>&1 &
+          echo $! > sidecar.pid
+          disown || true
+          for _ in $(seq 1 40); do
+            if (echo >/dev/tcp/127.0.0.1/4001) 2>/dev/null; then
+              echo "Sidecar ready on :4001"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "Sidecar failed to start" >&2
+          cat sidecar.log >&2
+          exit 1
+          BASH
 
       - name: Run example
         run: |
-          nix develop .#stable --command bash -c '
-            DURABLETASK_SKIP_SIDECAR=1 \
-            timeout 120s cargo run -p dapr-durabletask --example ${{ matrix.example }}
-          '
+          nix develop .#stable --command bash <<'BASH'
+          DURABLETASK_SKIP_SIDECAR=1 \
+          timeout 120s cargo run -p dapr-durabletask --example "$EXAMPLE"
+          BASH
         env:
           DURABLETASK_SKIP_SIDECAR: "1"
+          EXAMPLE: ${{ matrix.example }}
           RUST_LOG: info
 
       - name: Stop sidecar

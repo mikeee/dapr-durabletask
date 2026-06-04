@@ -61,5 +61,9 @@ name = "human_interaction"
 path = "examples/human_interaction.rs"
 
 [[example]]
+name = "external_event_timer_tracking"
+path = "examples/external_event_timer_tracking.rs"
+
+[[example]]
 name = "workflow_history_propagation"
 path = "examples/workflow_history_propagation.rs"
