@@ -2825,4 +2825,147 @@ async fn test_wait_for_external_event_with_timeout_action_origin() {
     assert!(dt.year() < 9999, "should not be far-future");
 }
 
+#[tokio::test]
+async fn test_external_event_with_timeout_backwards_compat_no_origin() {
+    // Old history may not carry an origin on the TimerCreatedEvent.
+    // The SDK should replay correctly (event wins).
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "approval",
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed_out\"".to_string())),
+            }
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(30);
+    // Timer in history has NO origin (simulates pre-WEETT history).
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created_with_origin(3, fire_at, None),
+        ],
+        vec![make_event_raised("approval", Some("\"yes\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_wait_for_external_event_replay_with_tracking_timer() {
+    // Replay after a previous execution emitted the far-future tracking timer.
+    // History carries the patch name so is_patched returns true and the
+    // tracking timer is emitted deterministically.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("approval").await?;
+            Ok(result)
+        })
+    });
+
+    let far_future = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+        .unwrap()
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc();
+
+    let origin =
+        proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
+            name: "approval".to_string(),
+        });
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started_with_patches(
+                ts_now(),
+                vec!["dapr:external-event-timer".to_string()],
+            ),
+            make_execution_started("test_orch", None),
+            // Tracking timer at sequence 0.
+            make_timer_created_with_origin(3, far_future, Some(origin)),
+        ],
+        vec![make_event_raised("approval", Some("\"hello\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"hello\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_version_patches_populated_in_response() {
+    // A new execution calling wait_for_external_event should produce
+    // a response with the external-event-timer patch in version.patches.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("approval").await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("approval", Some("\"yes\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+
+    // Response must include the patch so the runtime records it.
+    let version = resp.version.as_ref().expect("version should be set");
+    assert!(
+        version
+            .patches
+            .contains(&"dapr:external-event-timer".to_string()),
+        "patches should include external-event-timer, got: {:?}",
+        version.patches,
+    );
+}
+
+#[tokio::test]
+async fn test_no_version_patches_when_no_patch_applied() {
+    // An orchestration that does not use is_patched should have version = None.
+    let orch_fn: OrchestratorFn =
+        Arc::new(|_ctx| Box::pin(async { Ok(Some("\"done\"".to_string())) }));
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        resp.version.is_none(),
+        "version should be None when no patches applied"
+    );
+}
+
 use chrono::Datelike;

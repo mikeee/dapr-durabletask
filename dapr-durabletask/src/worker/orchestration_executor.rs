@@ -603,13 +603,33 @@ impl OrchestrationExecutor {
             }
         }
 
+        // Persist applied patches so the runtime records them in the next
+        // WorkflowStarted event, enabling correct replay of patch-gated code.
+        let version = {
+            let mut applied: Vec<String> = inner
+                .applied_patches
+                .iter()
+                .filter(|(_, v)| **v)
+                .map(|(k, _)| k.clone())
+                .collect();
+            if applied.is_empty() {
+                None
+            } else {
+                applied.sort();
+                Some(proto::WorkflowVersion {
+                    patches: applied,
+                    name: None,
+                })
+            }
+        };
+
         proto::WorkflowResponse {
             instance_id: instance_id.to_string(),
             actions,
             custom_status: inner.custom_status.take(),
             completion_token,
             num_events_processed: None,
-            version: None,
+            version,
         }
     }
 }

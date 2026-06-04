@@ -637,11 +637,19 @@ impl OrchestrationContext {
         let winner = super::when_any::when_any(vec![event_task.clone(), timer_task]).await?;
         match winner {
             0 => {
-                // Extract the event payload.
                 let payload = event_task.await?;
                 Ok(ExternalEventResult::Received(payload))
             }
-            _ => Ok(ExternalEventResult::TimedOut),
+            _ => {
+                // Timer won — remove the stale event waiter so it does not
+                // silently consume a later event with the same name.
+                let mut inner = lock_inner(&self.inner);
+                let event_name = name.to_lowercase();
+                if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name) {
+                    tasks.retain(|t| !t.ptr_eq(&event_task));
+                }
+                Ok(ExternalEventResult::TimedOut)
+            }
         }
     }
 
