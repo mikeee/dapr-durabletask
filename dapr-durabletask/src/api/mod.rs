@@ -1,4 +1,5 @@
 mod errors;
+mod external_event;
 mod failure_details;
 mod history_propagation;
 mod orchestration_state;
@@ -7,6 +8,7 @@ mod purge_instance_filter;
 mod retry_policy;
 
 pub use errors::{DurableTaskError, Result};
+pub use external_event::ExternalEventResult;
 pub use failure_details::FailureDetails;
 pub use history_propagation::{
     HistoryPropagationScope, PropagatedHistory, PropagatedHistoryChunk, PropagationNotFoundError,

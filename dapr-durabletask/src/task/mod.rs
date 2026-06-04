@@ -11,3 +11,6 @@ pub use options::{ActivityOptions, SubOrchestratorOptions};
 pub use orchestration_context::OrchestrationContext;
 pub use when_all::{WhenAllTask, when_all};
 pub use when_any::{WhenAnyTask, when_any};
+
+// Re-export API type for convenience.
+pub use crate::api::ExternalEventResult;

@@ -1,20 +1,32 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::api::{
-    DurableTaskError, FailureDetails, HistoryPropagationScope, OrchestrationStatus,
-    PropagatedHistory, RetryPolicy,
+    DurableTaskError, ExternalEventResult, FailureDetails, HistoryPropagationScope,
+    OrchestrationStatus, PropagatedHistory, RetryPolicy,
 };
 use crate::internal::{to_json, to_timestamp};
 use crate::proto;
 
 use super::completable_task::CompletableTask;
 use super::options::{ActivityOptions, SubOrchestratorOptions};
+
+/// Patch gate for replay-safe external-event timers.
+const EXTERNAL_EVENT_TIMER_PATCH: &str = "dapr:external-event-timer";
+
+/// Sentinel timestamp for indefinite event waits.
+static FAR_FUTURE_TIMESTAMP: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
+    chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+        .unwrap()
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc()
+});
 
 pub(crate) fn lock_inner<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -463,6 +475,18 @@ impl OrchestrationContext {
     pub fn create_timer(&self, delay: std::time::Duration) -> CompletableTask {
         tracing::debug!(delay_ms = delay.as_millis() as u64, "Creating timer");
         let mut inner = lock_inner(&self.inner);
+        let fire_at = inner.current_utc_datetime
+            + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero());
+        Self::create_timer_with_origin(&mut inner, fire_at, None, None)
+    }
+
+    /// Create a timer action, optionally tagging its origin.
+    fn create_timer_with_origin(
+        inner: &mut OrchestrationContextInner,
+        fire_at: chrono::DateTime<chrono::Utc>,
+        name: Option<String>,
+        origin: Option<proto::create_timer_action::Origin>,
+    ) -> CompletableTask {
         let seq = inner.sequence_number;
         inner.sequence_number += 1;
 
@@ -476,16 +500,14 @@ impl OrchestrationContext {
         task.set_replay_handle(inner.is_replaying.clone());
         inner.pending_tasks.insert(seq, task.clone());
 
-        let fire_at = inner.current_utc_datetime
-            + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero());
         let action = proto::WorkflowAction {
             id: seq,
             router: None,
             workflow_action_type: Some(proto::workflow_action::WorkflowActionType::CreateTimer(
                 proto::CreateTimerAction {
                     fire_at: Some(to_timestamp(fire_at)),
-                    name: None,
-                    origin: None,
+                    name,
+                    origin,
                 },
             )),
         };
@@ -497,10 +519,30 @@ impl OrchestrationContext {
     /// Wait for an external event with the given name.
     ///
     /// Event names are case-insensitive.
+    ///
+    /// Patched executions also emit a far-future timer tagged with the event
+    /// name, letting the runtime track the wait.
     pub fn wait_for_external_event(&self, name: &str) -> CompletableTask {
         tracing::debug!(event_name = %name, "Waiting for external event");
         let mut inner = lock_inner(&self.inner);
         let event_name = name.to_lowercase();
+
+        // Gate timer emission for replay safety.
+        let emit_timer = Self::is_patched_inner(&mut inner, EXTERNAL_EVENT_TIMER_PATCH);
+        if emit_timer {
+            let origin = proto::create_timer_action::Origin::ExternalEvent(
+                proto::TimerOriginExternalEvent {
+                    name: name.to_string(),
+                },
+            );
+            // Use a sentinel timer; this API returns only the event task.
+            let _timer_task = Self::create_timer_with_origin(
+                &mut inner,
+                *FAR_FUTURE_TIMESTAMP,
+                None,
+                Some(origin),
+            );
+        }
 
         if let Some(events) = inner.buffered_events.get_mut(&event_name)
             && !events.is_empty()
@@ -524,6 +566,108 @@ impl OrchestrationContext {
         }
         pending.push_back(task.clone());
         task
+    }
+
+    /// Wait for an external event with a timeout.
+    ///
+    /// Returns [`ExternalEventResult::Received`] if the event arrives before
+    /// the timeout, or [`ExternalEventResult::TimedOut`] if the timeout fires
+    /// first.
+    ///
+    /// Always emits a timer tagged with the event name.
+    ///
+    /// Event names are case-insensitive.
+    pub async fn wait_for_external_event_with_timeout(
+        &self,
+        name: &str,
+        timeout: std::time::Duration,
+    ) -> crate::api::Result<ExternalEventResult> {
+        tracing::debug!(
+            event_name = %name,
+            timeout_ms = timeout.as_millis() as u64,
+            "Waiting for external event with timeout"
+        );
+
+        let (event_task, timer_task) = {
+            let mut inner = lock_inner(&self.inner);
+            let event_name = name.to_lowercase();
+
+            // Create the external-event timeout timer.
+            let fire_at = inner.current_utc_datetime
+                + chrono::Duration::from_std(timeout).unwrap_or(chrono::Duration::zero());
+            let origin = proto::create_timer_action::Origin::ExternalEvent(
+                proto::TimerOriginExternalEvent {
+                    name: name.to_string(),
+                },
+            );
+            let timer_task =
+                Self::create_timer_with_origin(&mut inner, fire_at, None, Some(origin));
+
+            // Register the event wait.
+            let event_task = if let Some(events) = inner.buffered_events.get_mut(&event_name)
+                && !events.is_empty()
+            {
+                let (data, during_replay) = events
+                    .pop_front()
+                    .expect("buffered event queue is not empty");
+                let task = CompletableTask::new();
+                task.set_replay_handle(inner.is_replaying.clone());
+                task.complete_with_phase(data, during_replay);
+                task
+            } else {
+                let task = CompletableTask::new();
+                task.set_replay_handle(inner.is_replaying.clone());
+                let max_pending = inner.config.max_pending_tasks_per_name;
+                let pending = inner.pending_event_tasks.entry(event_name).or_default();
+                if pending.len() >= max_pending {
+                    tracing::warn!(
+                        event_name = %name,
+                        "Pending event task limit reached, discarding wait"
+                    );
+                } else {
+                    pending.push_back(task.clone());
+                }
+                task
+            };
+
+            (event_task, timer_task)
+        };
+
+        // Race the event and timer (0 = event, 1 = timer).
+        let winner = super::when_any::when_any(vec![event_task.clone(), timer_task]).await?;
+        match winner {
+            0 => {
+                let payload = event_task.await?;
+                Ok(ExternalEventResult::Received(payload))
+            }
+            _ => {
+                // Timer won — remove the stale event waiter so it does not
+                // silently consume a later event with the same name.
+                let mut inner = lock_inner(&self.inner);
+                let event_name = name.to_lowercase();
+                if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name) {
+                    tasks.retain(|t| !t.ptr_eq(&event_task));
+                }
+                Ok(ExternalEventResult::TimedOut)
+            }
+        }
+    }
+
+    /// `is_patched` variant for callers that already hold the lock.
+    fn is_patched_inner(inner: &mut OrchestrationContextInner, patch_name: &str) -> bool {
+        if let Some(&cached) = inner.applied_patches.get(patch_name) {
+            return cached;
+        }
+        if inner.history_patches.contains(patch_name) {
+            inner.applied_patches.insert(patch_name.to_string(), true);
+            return true;
+        }
+        if inner.sequence_number < inner.history_scheduled_count {
+            inner.applied_patches.insert(patch_name.to_string(), false);
+            return false;
+        }
+        inner.applied_patches.insert(patch_name.to_string(), true);
+        true
     }
 
     /// Continue the orchestration as new with new input.
@@ -690,6 +834,7 @@ fn call_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     fn make_ctx() -> OrchestrationContext {
         OrchestrationContext::new(
@@ -919,5 +1064,186 @@ mod tests {
         // Second call uses the cache regardless of state changes.
         ctx.inner.lock().unwrap().history_scheduled_count = 99;
         assert!(ctx.is_patched("my-patch"));
+    }
+
+    /// Extract a `CreateTimerAction`.
+    fn extract_create_timer(action: &proto::WorkflowAction) -> &proto::CreateTimerAction {
+        match &action.workflow_action_type {
+            Some(proto::workflow_action::WorkflowActionType::CreateTimer(a)) => a,
+            other => panic!("expected CreateTimer action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_create_timer_origin_none() {
+        // Generic timers have no origin.
+        let ctx = make_ctx();
+        let _task = ctx.create_timer(std::time::Duration::from_secs(60));
+
+        let inner = ctx.inner.lock().unwrap();
+        let timer_action = extract_create_timer(&inner.pending_actions[0]);
+        assert!(
+            timer_action.origin.is_none(),
+            "generic timer should have no origin"
+        );
+    }
+
+    #[test]
+    fn test_wait_for_external_event_emits_timer_new_execution() {
+        // New executions emit a far-future ExternalEvent timer.
+        let ctx = make_ctx();
+        let _task = ctx.wait_for_external_event("approval");
+
+        let inner = ctx.inner.lock().unwrap();
+        assert_eq!(
+            inner.sequence_number, 1,
+            "should have allocated a seq for the timer"
+        );
+        assert_eq!(
+            inner.pending_actions.len(),
+            1,
+            "should have emitted a CreateTimerAction"
+        );
+
+        let timer_action = extract_create_timer(&inner.pending_actions[0]);
+        match &timer_action.origin {
+            Some(proto::create_timer_action::Origin::ExternalEvent(e)) => {
+                assert_eq!(e.name, "approval");
+            }
+            other => panic!("expected ExternalEvent origin, got {other:?}"),
+        }
+
+        // Assert the far-future sentinel.
+        let fire_at = timer_action
+            .fire_at
+            .as_ref()
+            .expect("fire_at should be set");
+        let fire_at_dt = chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32);
+        assert!(fire_at_dt.is_some());
+        assert!(fire_at_dt.unwrap().year() >= 9999);
+    }
+
+    #[test]
+    fn test_wait_for_external_event_no_timer_during_replay() {
+        // Mid-replay without patch history keeps old behaviour: no timer.
+        let ctx = make_ctx();
+        ctx.inner.lock().unwrap().history_scheduled_count = 5;
+
+        let _task = ctx.wait_for_external_event("approval");
+
+        let inner = ctx.inner.lock().unwrap();
+        assert_eq!(
+            inner.sequence_number, 0,
+            "should NOT allocate a seq during replay"
+        );
+        assert!(
+            inner.pending_actions.is_empty(),
+            "should NOT emit a timer during replay"
+        );
+        assert_eq!(inner.pending_event_tasks.get("approval").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_wait_for_external_event_buffered_still_emits_timer() {
+        // Buffered events still emit the timer in patched executions.
+        let ctx = make_ctx();
+        {
+            let mut inner = ctx.inner.lock().unwrap();
+            inner
+                .buffered_events
+                .entry("approval".to_string())
+                .or_default()
+                .push_back((Some("\"yes\"".to_string()), true));
+        }
+
+        let task = ctx.wait_for_external_event("APPROVAL");
+        assert!(
+            task.is_complete(),
+            "buffered event should complete immediately"
+        );
+
+        let inner = ctx.inner.lock().unwrap();
+        assert_eq!(
+            inner.sequence_number, 1,
+            "should have allocated a seq for the timer"
+        );
+        assert_eq!(inner.pending_actions.len(), 1);
+        let timer_action = extract_create_timer(&inner.pending_actions[0]);
+        assert!(
+            matches!(
+                &timer_action.origin,
+                Some(proto::create_timer_action::Origin::ExternalEvent(_))
+            ),
+            "timer origin should be ExternalEvent"
+        );
+    }
+
+    #[test]
+    fn test_wait_for_external_event_with_timeout_emits_timer() {
+        // Timeout waits always emit the explicit timer.
+        let ctx = make_ctx();
+
+        // Mirror the method setup without awaiting the future.
+        {
+            let mut inner = ctx.inner.lock().unwrap();
+            let event_name = "approval".to_string();
+            let fire_at = inner.current_utc_datetime + chrono::Duration::seconds(30);
+            let origin = proto::create_timer_action::Origin::ExternalEvent(
+                proto::TimerOriginExternalEvent {
+                    name: "approval".to_string(),
+                },
+            );
+            let _timer = OrchestrationContext::create_timer_with_origin(
+                &mut inner,
+                fire_at,
+                None,
+                Some(origin),
+            );
+            // Register the event wait.
+            let task = CompletableTask::new();
+            inner
+                .pending_event_tasks
+                .entry(event_name)
+                .or_default()
+                .push_back(task);
+        }
+
+        let inner = ctx.inner.lock().unwrap();
+        assert_eq!(inner.sequence_number, 1);
+        let timer_action = extract_create_timer(&inner.pending_actions[0]);
+        match &timer_action.origin {
+            Some(proto::create_timer_action::Origin::ExternalEvent(e)) => {
+                assert_eq!(e.name, "approval");
+            }
+            other => panic!("expected ExternalEvent origin, got {other:?}"),
+        }
+        // Timeout timers are not the far-future sentinel.
+        let fire_at = timer_action.fire_at.as_ref().unwrap();
+        let fire_at_dt =
+            chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32).unwrap();
+        assert!(fire_at_dt.year() < 9999, "should not be far-future");
+    }
+
+    #[test]
+    fn test_create_timer_refactor_still_works() {
+        // create_timer still delegates without adding an origin.
+        let ctx = make_ctx();
+        let _t1 = ctx.create_timer(std::time::Duration::from_secs(10));
+        let _t2 = ctx.create_timer(std::time::Duration::from_secs(20));
+
+        let inner = ctx.inner.lock().unwrap();
+        assert_eq!(inner.sequence_number, 2);
+        assert_eq!(inner.pending_actions.len(), 2);
+        assert_eq!(inner.pending_actions[0].id, 0);
+        assert_eq!(inner.pending_actions[1].id, 1);
+
+        for action in &inner.pending_actions {
+            let timer = extract_create_timer(action);
+            assert!(timer.fire_at.is_some());
+            assert!(
+                timer.origin.is_none(),
+                "generic timer should have no origin"
+            );
+        }
     }
 }

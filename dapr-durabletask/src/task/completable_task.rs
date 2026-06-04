@@ -104,6 +104,11 @@ impl CompletableTask {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.result.clone()
     }
+
+    /// Check if two tasks share the same inner state (are clones of each other).
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 impl Default for CompletableTask {

@@ -811,9 +811,7 @@ async fn test_external_event_received() {
 
 #[tokio::test]
 async fn test_external_event_buffered() {
-    // Event arrives before wait_for_external_event is called
-    // The event is delivered as part of new_events before the orchestrator
-    // calls wait_for_external_event
+    // Event is buffered before wait_for_external_event runs.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -821,7 +819,7 @@ async fn test_external_event_buffered() {
         })
     });
 
-    // Event arrives in new_events before ExecutionStarted triggers the orch
+    // Event arrives with the initial execution.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -845,13 +843,13 @@ async fn test_external_event_buffered() {
 async fn test_external_event_case_insensitive() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
-            // Wait for lowercase
+            // Wait for lower-case name.
             let result = ctx.wait_for_external_event("approval").await?;
             Ok(result)
         })
     });
 
-    // Event arrives with uppercase name
+    // Event arrives with upper-case name.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -878,7 +876,6 @@ async fn test_multiple_external_events() {
             let a = ctx.wait_for_external_event("event_a").await?;
             let b = ctx.wait_for_external_event("event_b").await?;
             let c = ctx.wait_for_external_event("event_c").await?;
-            // Concatenate results
             let combined = format!(
                 "\"{},{},{}\"",
                 a.as_deref().unwrap_or(""),
@@ -1620,8 +1617,16 @@ async fn test_event_not_yet_received() {
 
     // No complete action — orchestrator is waiting
     assert!(get_complete_action(&resp.actions).is_none());
-    // No schedule/timer actions either
-    assert!(resp.actions.is_empty());
+    // Tracking timer records the awaited external event.
+    let timers = get_timer_actions(&resp.actions);
+    assert_eq!(timers.len(), 1, "should emit a tracking timer");
+    assert!(
+        matches!(
+            &timers[0].origin,
+            Some(proto::create_timer_action::Origin::ExternalEvent(e)) if e.name == "approval"
+        ),
+        "timer origin should be ExternalEvent(approval)"
+    );
 }
 
 #[tokio::test]
@@ -1847,7 +1852,7 @@ async fn test_terminate_with_output() {
 
 #[tokio::test]
 async fn test_mixed_event_types_in_replay() {
-    // Complex scenario: activity + timer + external event in replay
+    // Replay includes activity, timer and external event.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let a = ctx.call_activity("fetch_data", ()).await?;
@@ -1868,15 +1873,15 @@ async fn test_mixed_event_types_in_replay() {
         vec![
             make_workflow_started(ts_now()),
             make_execution_started("test_orch", None),
-            // activity at seq 0
+            // Activity at sequence 0.
             make_task_scheduled(3, "fetch_data"),
             make_task_completed(4, 0, Some("\"fetched\"".to_string())),
-            // timer at seq 1
+            // Timer at sequence 1.
             make_timer_created(5, fire_at),
             make_timer_fired(6, 1),
         ],
         vec![
-            // external event arrives in new events
+            // External event arrives in new_events.
             make_event_raised("user_input", Some("\"clicked\"".to_string())),
         ],
     )
@@ -1888,7 +1893,7 @@ async fn test_mixed_event_types_in_replay() {
         cw.workflow_status,
         proto::OrchestrationStatus::Completed as i32
     );
-    // The inner values include JSON quotes, so the format! result has embedded quotes
+    // Inner JSON strings keep their quotes.
     assert_eq!(
         cw.result,
         Some("\"data=\"fetched\",event=\"clicked\"\"".to_string())
@@ -2555,3 +2560,412 @@ async fn test_propagated_history_absent_returns_none() {
     .unwrap();
     assert!(captured.lock().unwrap().is_none());
 }
+
+// ===========================================================================
+// External event timer origins
+// ===========================================================================
+
+use dapr_durabletask::api::ExternalEventResult;
+
+fn make_timer_created_with_origin(
+    event_id: i32,
+    fire_at: chrono::DateTime<chrono::Utc>,
+    origin: Option<proto::timer_created_event::Origin>,
+) -> proto::HistoryEvent {
+    proto::HistoryEvent {
+        event_id,
+        timestamp: Some(to_timestamp(ts_now())),
+        router: None,
+        event_type: Some(EventType::TimerCreated(proto::TimerCreatedEvent {
+            fire_at: Some(to_timestamp(fire_at)),
+            name: None,
+            rerun_parent_instance_info: None,
+            origin,
+        })),
+    }
+}
+
+#[tokio::test]
+async fn test_external_event_with_timeout_event_wins() {
+    // Event arrives before the timeout timer fires.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "approval",
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed_out\"".to_string())),
+            }
+        })
+    });
+
+    // Replay: timer at sequence 0; event arrives before it fires.
+    let fire_at = ts_now() + chrono::Duration::seconds(30);
+    let origin =
+        proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
+            name: "approval".to_string(),
+        });
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created_with_origin(3, fire_at, Some(origin)),
+        ],
+        vec![make_event_raised("approval", Some("\"yes\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_external_event_with_timeout_timer_wins() {
+    // Timeout timer fires before the event arrives.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "approval",
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed_out\"".to_string())),
+            }
+        })
+    });
+
+    // Replay: timer at sequence 0 fires; no event arrived.
+    let fire_at = ts_now() + chrono::Duration::seconds(30);
+    let origin =
+        proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
+            name: "approval".to_string(),
+        });
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created_with_origin(3, fire_at, Some(origin)),
+            make_timer_fired(4, 0),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"timed_out\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_external_event_with_timeout_immediate_event() {
+    // New event wins the when_any race.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "approval",
+                    std::time::Duration::from_secs(60),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed_out\"".to_string())),
+            }
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("approval", Some("\"instant\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"instant\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() {
+    // Fresh executions emit a far-future ExternalEvent timer.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("approval").await?;
+            Ok(result)
+        })
+    });
+
+    // Event arrives immediately.
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("approval", Some("\"yes\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+
+    // Also emits a tracking timer with ExternalEvent origin.
+    let timers = get_timer_actions(&resp.actions);
+    assert_eq!(timers.len(), 1);
+    match &timers[0].origin {
+        Some(proto::create_timer_action::Origin::ExternalEvent(e)) => {
+            assert_eq!(e.name, "approval");
+        }
+        other => panic!("expected ExternalEvent origin, got {other:?}"),
+    }
+    // fire_at is far-future (year 9999).
+    let fire_at = timers[0].fire_at.as_ref().unwrap();
+    let dt = chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32).unwrap();
+    assert!(dt.year() >= 9999, "should be far-future timestamp");
+}
+
+#[tokio::test]
+async fn test_generic_timer_has_no_external_event_origin() {
+    // create_timer has no ExternalEvent origin.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let _timer = ctx.create_timer(std::time::Duration::from_secs(10));
+            Ok(Some("\"done\"".to_string()))
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    let timers = get_timer_actions(&resp.actions);
+    assert_eq!(timers.len(), 1);
+    assert!(
+        timers[0].origin.is_none(),
+        "generic timer should have no origin"
+    );
+}
+
+#[tokio::test]
+async fn test_wait_for_external_event_with_timeout_action_origin() {
+    // First execution emits an ExternalEvent timer with the requested timeout.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "my_event",
+                    std::time::Duration::from_secs(45),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timeout\"".to_string())),
+            }
+        })
+    });
+
+    // Event arrives immediately.
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("my_event", Some("\"payload\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(cw.result, Some("\"payload\"".to_string()));
+
+    // Timer action has ExternalEvent origin.
+    let timers = get_timer_actions(&resp.actions);
+    assert_eq!(timers.len(), 1);
+    match &timers[0].origin {
+        Some(proto::create_timer_action::Origin::ExternalEvent(e)) => {
+            assert_eq!(e.name, "my_event");
+        }
+        other => panic!("expected ExternalEvent origin, got {other:?}"),
+    }
+    // fire_at uses the requested 45-second timeout.
+    let fire_at = timers[0].fire_at.as_ref().unwrap();
+    let dt = chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32).unwrap();
+    assert!(dt.year() < 9999, "should not be far-future");
+}
+
+#[tokio::test]
+async fn test_external_event_with_timeout_backwards_compat_no_origin() {
+    // Old history may not carry an origin on the TimerCreatedEvent.
+    // The SDK should replay correctly (event wins).
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .wait_for_external_event_with_timeout(
+                    "approval",
+                    std::time::Duration::from_secs(30),
+                )
+                .await?;
+            match result {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed_out\"".to_string())),
+            }
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(30);
+    // Timer in history has NO origin (simulates pre-WEETT history).
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created_with_origin(3, fire_at, None),
+        ],
+        vec![make_event_raised("approval", Some("\"yes\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_wait_for_external_event_replay_with_tracking_timer() {
+    // Replay after a previous execution emitted the far-future tracking timer.
+    // History carries the patch name so is_patched returns true and the
+    // tracking timer is emitted deterministically.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("approval").await?;
+            Ok(result)
+        })
+    });
+
+    let far_future = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+        .unwrap()
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc();
+
+    let origin =
+        proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
+            name: "approval".to_string(),
+        });
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started_with_patches(
+                ts_now(),
+                vec!["dapr:external-event-timer".to_string()],
+            ),
+            make_execution_started("test_orch", None),
+            // Tracking timer at sequence 0.
+            make_timer_created_with_origin(3, far_future, Some(origin)),
+        ],
+        vec![make_event_raised("approval", Some("\"hello\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"hello\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_version_patches_populated_in_response() {
+    // A new execution calling wait_for_external_event should produce
+    // a response with the external-event-timer patch in version.patches.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("approval").await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("approval", Some("\"yes\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(cw.result, Some("\"yes\"".to_string()));
+
+    // Response must include the patch so the runtime records it.
+    let version = resp.version.as_ref().expect("version should be set");
+    assert!(
+        version
+            .patches
+            .contains(&"dapr:external-event-timer".to_string()),
+        "patches should include external-event-timer, got: {:?}",
+        version.patches,
+    );
+}
+
+#[tokio::test]
+async fn test_no_version_patches_when_no_patch_applied() {
+    // An orchestration that does not use is_patched should have version = None.
+    let orch_fn: OrchestratorFn =
+        Arc::new(|_ctx| Box::pin(async { Ok(Some("\"done\"".to_string())) }));
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        resp.version.is_none(),
+        "version should be None when no patches applied"
+    );
+}
+
+use chrono::Datelike;
