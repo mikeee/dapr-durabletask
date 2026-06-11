@@ -196,6 +196,7 @@ impl TaskHubGrpcWorker {
         // `shutdown_triggered` tracks whether we exited the intake loop because
         // of a cancellation (true) or because the stream closed (false/error).
         let shutdown_triggered = loop {
+            prune_finished_tasks(&mut tasks);
             tokio::select! {
                 biased; // check shutdown first so we don't accept more items
                 _ = shutdown.cancelled() => {
@@ -204,6 +205,11 @@ impl TaskHubGrpcWorker {
                         "Shutdown: stopping intake, draining in-flight work items"
                     );
                     break true;
+                }
+                Some(outcome) = tasks.join_next(), if !tasks.is_empty() => {
+                    if let Err(e) = outcome {
+                        tracing::error!(error = ?e, "Work item task panicked");
+                    }
                 }
                 item = stream.next() => {
                     match item {
@@ -507,6 +513,14 @@ impl TaskHubGrpcWorker {
     }
 }
 
+fn prune_finished_tasks(tasks: &mut JoinSet<()>) {
+    while let Some(outcome) = tasks.try_join_next() {
+        if let Err(e) = outcome {
+            tracing::error!(error = ?e, "Work item task panicked");
+        }
+    }
+}
+
 fn build_error_response(
     instance_id: &str,
     message: &str,
@@ -540,5 +554,86 @@ fn build_error_response(
         completion_token,
         num_events_processed: None,
         version: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::Duration;
+
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
+
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn prune_until_empty(tasks: &mut JoinSet<()>) {
+        timeout(WAIT_TIMEOUT, async {
+            while !tasks.is_empty() {
+                prune_finished_tasks(tasks);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for prune_finished_tasks to drain the JoinSet");
+    }
+
+    #[tokio::test]
+    async fn prune_finished_tasks_drains_all_completed_tasks() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        for _ in 0..16 {
+            tasks.spawn(async {});
+        }
+
+        prune_until_empty(&mut tasks).await;
+
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn prune_finished_tasks_keeps_in_flight_tasks() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        for _ in 0..8 {
+            tasks.spawn(async {});
+        }
+
+        let mut senders = Vec::new();
+        for _ in 0..4 {
+            let (tx, rx) = oneshot::channel::<()>();
+            senders.push(tx);
+            tasks.spawn(async move {
+                let _ = rx.await;
+            });
+        }
+
+        timeout(WAIT_TIMEOUT, async {
+            while tasks.len() > 4 {
+                prune_finished_tasks(&mut tasks);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for completed tasks to be pruned");
+        assert_eq!(tasks.len(), 4);
+
+        for tx in senders {
+            let _ = tx.send(());
+        }
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_finished_tasks_handles_panicked_tasks() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        tasks.spawn(async {
+            panic!("intentional test panic");
+        });
+
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
     }
 }
