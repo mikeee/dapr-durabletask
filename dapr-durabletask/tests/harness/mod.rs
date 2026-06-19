@@ -7,7 +7,7 @@
 //! free ports.
 
 use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use dapr_durabletask::client::TaskHubGrpcClient;
@@ -29,6 +29,16 @@ pub fn sidecar_bin() -> Option<String> {
     ]
     .into_iter()
     .find(|bin| std::path::Path::new(bin).exists())
+}
+
+/// Kill a child process and wait for it to exit, ensuring no zombie is left.
+///
+/// Returns the exit status if the child was successfully reaped.
+/// This helper prevents the common mistake of calling `kill()` without a
+/// subsequent `wait()`, which leaves zombie processes on Unix.
+pub fn kill_and_wait(child: &mut Child) -> Option<ExitStatus> {
+    let _ = child.kill();
+    child.wait().ok()
 }
 
 /// Ask the OS for an ephemeral free port.
@@ -56,7 +66,7 @@ impl TestEnv {
         let port = free_port();
         let address = format!("http://127.0.0.1:{port}");
 
-        let sidecar = Command::new(&bin)
+        let mut sidecar = Command::new(&bin)
             .args(["--port", &port.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -70,6 +80,7 @@ impl TestEnv {
             }
         }
         eprintln!("[harness] Sidecar on port {port} failed to start within 4 s");
+        kill_and_wait(&mut sidecar);
         None
     }
 
@@ -86,8 +97,7 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        let _ = self.sidecar.kill();
-        let _ = self.sidecar.wait();
+        kill_and_wait(&mut self.sidecar);
     }
 }
 
@@ -132,4 +142,140 @@ pub fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod process_lifecycle_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Spawn a long-running `sleep` process (acts as a stand-in for the sidecar).
+    fn spawn_sleep() -> Child {
+        Command::new("sleep")
+            .arg("300")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn sleep process")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_state(pid: u32) -> Option<char> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let state = status.lines().find(|line| line.starts_with("State:"))?;
+        state.split_whitespace().nth(1)?.chars().next()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_process_state(pid: u32, expected: char) -> Option<char> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut last_state = process_state(pid);
+        while std::time::Instant::now() < deadline {
+            if last_state == Some(expected) {
+                return last_state;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            last_state = process_state(pid);
+        }
+        last_state
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_reaped(pid: u32, context: &str) {
+        assert_eq!(
+            process_state(pid),
+            None,
+            "{context}: child process {pid} should be fully reaped"
+        );
+    }
+
+    /// Verifies that `kill_and_wait` actually reaps the child process (no zombie).
+    #[test]
+    fn kill_and_wait_reaps_child() {
+        let mut child = spawn_sleep();
+        let pid = child.id();
+
+        let status = kill_and_wait(&mut child);
+        assert!(status.is_some(), "kill_and_wait must return an ExitStatus");
+
+        // On Unix, /proc/<pid>/status should not exist for a fully reaped child.
+        #[cfg(target_os = "linux")]
+        assert_reaped(pid, "kill_and_wait");
+    }
+
+    /// Verifies that `kill_and_wait` is idempotent — calling it on an already-exited
+    /// child does not panic.
+    #[test]
+    fn kill_and_wait_idempotent_on_exited_child() {
+        let mut child = Command::new("true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `true`");
+
+        let _ = child.wait();
+
+        let status = kill_and_wait(&mut child);
+        // On most platforms, wait after a previous wait returns the cached status.
+        // The important thing is it doesn't panic or leave a zombie.
+        let _ = status;
+    }
+
+    /// Regression: TestEnv::Drop must reap the child so no zombie remains.
+    /// Simulates the TestEnv lifecycle with a real long-running process.
+    #[test]
+    fn test_env_drop_reaps_child() {
+        let child = spawn_sleep();
+        let pid = child.id();
+
+        let env = TestEnv {
+            address: "http://127.0.0.1:0".to_string(),
+            sidecar: child,
+        };
+        std::mem::drop(env);
+
+        #[cfg(target_os = "linux")]
+        assert_reaped(pid, "TestEnv drop");
+    }
+
+    /// Regression: kill without wait leaves a zombie. Demonstrates that our
+    /// helper avoids this by requiring wait after kill.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kill_without_wait_leaves_zombie() {
+        let mut child = spawn_sleep();
+        let pid = child.id();
+
+        // Kill but intentionally do NOT wait — simulates the bug we're preventing.
+        let _ = child.kill();
+
+        let state_before_wait = wait_for_process_state(pid, 'Z');
+
+        let _ = child.wait();
+
+        assert_eq!(
+            state_before_wait,
+            Some('Z'),
+            "kill without wait should leave process {pid} in zombie state before wait"
+        );
+    }
+
+    /// Ensures the SidecarHandle (from e2e.rs) pattern of kill+wait is correct.
+    /// Tests the same pattern inline: kill then wait must result in full cleanup.
+    #[test]
+    fn sidecar_handle_pattern_reaps() {
+        let mut child = spawn_sleep();
+        let pid = child.id();
+
+        // Mirror SidecarHandle::kill pattern: kill then wait.
+        let _ = child.kill();
+        let wait_result = child.wait();
+        assert!(
+            wait_result.is_ok(),
+            "wait after kill must succeed for proper reaping"
+        );
+
+        #[cfg(target_os = "linux")]
+        assert_reaped(pid, "SidecarHandle kill pattern");
+    }
 }

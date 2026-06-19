@@ -132,4 +132,63 @@ mod tests {
         let result: crate::api::Result<String> = from_json(Some("\"a\""), 3);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_from_json_invalid_json() {
+        let result: crate::api::Result<String> =
+            from_json(Some("not valid json"), DEFAULT_MAX_JSON_SIZE);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            crate::api::DurableTaskError::Serialization(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_json_none_option() {
+        let val: Option<i32> = None;
+        let result = to_json(&val).unwrap();
+        // None serialises to "null", which maps to Ok(None)
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_to_json_some_option() {
+        let val: Option<i32> = Some(42);
+        let result = to_json(&val).unwrap();
+        assert_eq!(result, Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_from_json_none_to_option() {
+        let result: Option<i32> = from_json(None, DEFAULT_MAX_JSON_SIZE).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_to_json_vec() {
+        let result = to_json(&vec![1, 2, 3]).unwrap();
+        assert_eq!(result, Some("[1,2,3]".to_string()));
+    }
+
+    #[test]
+    fn test_to_json_empty_string() {
+        let result = to_json(&"").unwrap();
+        assert_eq!(result, Some(r#""""#.to_string()));
+    }
+
+    #[test]
+    fn test_from_json_exact_max_size() {
+        let s = r#""a""#; // 3 bytes
+        let result: crate::api::Result<String> = from_json(Some(s), 3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_from_json_one_over_max_size() {
+        let s = r#""ab""#; // 4 bytes
+        let result: crate::api::Result<String> = from_json(Some(s), 3);
+        assert!(result.is_err());
+    }
 }

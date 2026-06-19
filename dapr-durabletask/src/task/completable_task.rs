@@ -240,4 +240,169 @@ mod tests {
         task.complete(Some("shared".to_string()));
         assert!(clone.is_complete());
     }
+
+    #[test]
+    fn test_default_is_not_complete() {
+        let task = CompletableTask::default();
+        assert!(!task.is_complete());
+        assert!(!task.is_failed());
+        assert!(task.get_result().is_none());
+    }
+
+    #[test]
+    fn test_complete_with_none_value() {
+        let task = CompletableTask::new();
+        task.complete(None);
+        assert!(task.is_complete());
+        assert!(!task.is_failed());
+        match task.get_result() {
+            Some(TaskResult::Completed(v)) => assert!(v.is_none()),
+            _ => panic!("expected Completed(None)"),
+        }
+    }
+
+    #[test]
+    fn test_double_complete_overwrites() {
+        // Regression: completing a task twice should overwrite the first result.
+        let task = CompletableTask::new();
+        task.complete(Some("first".to_string()));
+        task.complete(Some("second".to_string()));
+        assert!(task.is_complete());
+        match task.get_result() {
+            Some(TaskResult::Completed(v)) => assert_eq!(v, Some("second".to_string())),
+            _ => panic!("expected Completed with second value"),
+        }
+    }
+
+    #[test]
+    fn test_complete_then_fail_overwrites() {
+        // Regression: failing after completion overwrites result to Failed.
+        let task = CompletableTask::new();
+        task.complete(Some("ok".to_string()));
+        task.fail(FailureDetails {
+            message: "late failure".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+        assert!(task.is_complete());
+        assert!(task.is_failed());
+    }
+
+    #[test]
+    fn test_fail_then_complete_overwrites() {
+        // Regression: completing after failure overwrites result to Completed.
+        let task = CompletableTask::new();
+        task.fail(FailureDetails {
+            message: "err".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+        task.complete(Some("recovered".to_string()));
+        assert!(task.is_complete());
+        assert!(!task.is_failed());
+        match task.get_result() {
+            Some(TaskResult::Completed(v)) => assert_eq!(v, Some("recovered".to_string())),
+            _ => panic!("expected Completed after overwrite"),
+        }
+    }
+
+    #[test]
+    fn test_ptr_eq_clone_vs_new() {
+        let task = CompletableTask::new();
+        let clone = task.clone();
+        let other = CompletableTask::new();
+        assert!(task.ptr_eq(&clone));
+        assert!(!task.ptr_eq(&other));
+    }
+
+    #[test]
+    fn test_poll_completed_is_idempotent() {
+        // Regression: polling a completed task multiple times returns Ready each time.
+        let task = CompletableTask::new();
+        task.complete(Some("val".to_string()));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let mut t1 = task.clone();
+        assert!(Pin::new(&mut t1).poll(&mut cx).is_ready());
+        let mut t2 = task.clone();
+        assert!(Pin::new(&mut t2).poll(&mut cx).is_ready());
+    }
+
+    #[test]
+    fn test_poll_failed_is_idempotent() {
+        let task = CompletableTask::new();
+        task.fail(FailureDetails {
+            message: "err".to_string(),
+            error_type: "E".to_string(),
+            stack_trace: None,
+        });
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let mut t1 = task.clone();
+        assert!(Pin::new(&mut t1).poll(&mut cx).is_ready());
+        let mut t2 = task.clone();
+        assert!(Pin::new(&mut t2).poll(&mut cx).is_ready());
+    }
+
+    #[test]
+    fn test_replay_handle_not_cleared_during_replay() {
+        // When completed_during_replay=true (default), the replay handle stays true.
+        let handle = Arc::new(AtomicBool::new(true));
+        let task = CompletableTask::new();
+        task.set_replay_handle(handle.clone());
+        task.complete(Some("replayed".to_string())); // during_replay defaults true
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut t = task.clone();
+        let _ = Pin::new(&mut t).poll(&mut cx);
+        assert!(
+            handle.load(Ordering::Acquire),
+            "replay flag should stay true"
+        );
+    }
+
+    #[test]
+    fn test_replay_handle_cleared_for_new_event() {
+        // When completed_during_replay=false, polling should clear the replay handle.
+        let handle = Arc::new(AtomicBool::new(true));
+        let task = CompletableTask::new();
+        task.set_replay_handle(handle.clone());
+        task.complete_with_phase(Some("new".to_string()), false);
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut t = task.clone();
+        let _ = Pin::new(&mut t).poll(&mut cx);
+        assert!(
+            !handle.load(Ordering::Acquire),
+            "replay flag should be cleared for new events"
+        );
+    }
+
+    #[test]
+    fn test_fail_replay_handle_cleared_for_new_event() {
+        let handle = Arc::new(AtomicBool::new(true));
+        let task = CompletableTask::new();
+        task.set_replay_handle(handle.clone());
+        task.fail_with_phase(
+            FailureDetails {
+                message: "new fail".to_string(),
+                error_type: "E".to_string(),
+                stack_trace: None,
+            },
+            false,
+        );
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut t = task.clone();
+        let _ = Pin::new(&mut t).poll(&mut cx);
+        assert!(
+            !handle.load(Ordering::Acquire),
+            "replay flag should be cleared for new failure events"
+        );
+    }
 }

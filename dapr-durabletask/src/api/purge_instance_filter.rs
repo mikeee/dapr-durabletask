@@ -113,7 +113,35 @@ mod tests {
         let ts_to = p.created_time_to.unwrap();
         assert_eq!(ts_to.seconds, 1_700_100_000);
         assert_eq!(ts_to.nanos, 0);
-        // Failed == 3
         assert_eq!(p.runtime_status, vec![3]);
+    }
+
+    #[test]
+    fn empty_filter_into_proto() {
+        let f = PurgeInstanceFilter::new();
+        let p = f.into_proto();
+        assert!(p.created_time_from.is_none());
+        assert!(p.created_time_to.is_none());
+        assert!(p.runtime_status.is_empty());
+    }
+
+    #[test]
+    fn into_proto_multiple_statuses() {
+        let f = PurgeInstanceFilter::new().with_runtime_status([
+            OrchestrationStatus::Completed,
+            OrchestrationStatus::Failed,
+            OrchestrationStatus::Terminated,
+        ]);
+        let p = f.into_proto();
+        assert_eq!(p.runtime_status, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn default_is_same_as_new() {
+        let d = PurgeInstanceFilter::default();
+        let n = PurgeInstanceFilter::new();
+        assert_eq!(d.created_time_from, n.created_time_from);
+        assert_eq!(d.created_time_to, n.created_time_to);
+        assert_eq!(d.runtime_status, n.runtime_status);
     }
 }

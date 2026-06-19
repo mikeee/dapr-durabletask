@@ -149,4 +149,65 @@ mod tests {
         let dbg = format!("{p:?}");
         assert!(dbg.contains("handle: None"));
     }
+
+    #[test]
+    fn serde_json_roundtrip() {
+        let p = RetryPolicy::new(5, Duration::from_secs(2))
+            .with_backoff_coefficient(2.0)
+            .with_max_retry_interval(Duration::from_secs(60))
+            .with_retry_timeout(Duration::from_secs(300));
+        let json = serde_json::to_string(&p).unwrap();
+        let back: RetryPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.max_number_of_attempts, 5);
+        assert_eq!(back.first_retry_interval, Duration::from_secs(2));
+        assert!((back.backoff_coefficient - 2.0).abs() < f64::EPSILON);
+        assert_eq!(back.max_retry_interval, Some(Duration::from_secs(60)));
+        assert_eq!(back.retry_timeout, Some(Duration::from_secs(300)));
+        assert!(back.handle.is_none());
+    }
+
+    #[test]
+    fn serde_handle_is_skipped() {
+        let p = RetryPolicy::new(1, Duration::from_secs(1)).with_handle(|_| true);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("handle"));
+        let back: RetryPolicy = serde_json::from_str(&json).unwrap();
+        assert!(back.handle.is_none());
+    }
+
+    #[test]
+    fn serde_json_minimal() {
+        let p = RetryPolicy::new(1, Duration::from_secs(0));
+        let json = serde_json::to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["max_number_of_attempts"], 1);
+        assert!(v["max_retry_interval"].is_null());
+        assert!(v["retry_timeout"].is_null());
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let p = RetryPolicy::new(10, Duration::from_millis(500))
+            .with_backoff_coefficient(1.5)
+            .with_max_retry_interval(Duration::from_secs(30))
+            .with_retry_timeout(Duration::from_secs(120))
+            .with_handle(|d| d.error_type != "Fatal");
+        assert_eq!(p.max_number_of_attempts, 10);
+        assert_eq!(p.first_retry_interval, Duration::from_millis(500));
+        assert!((p.backoff_coefficient - 1.5).abs() < f64::EPSILON);
+        assert_eq!(p.max_retry_interval, Some(Duration::from_secs(30)));
+        assert_eq!(p.retry_timeout, Some(Duration::from_secs(120)));
+        let fatal = FailureDetails {
+            message: "".into(),
+            error_type: "Fatal".into(),
+            stack_trace: None,
+        };
+        assert!(!(p.handle.as_ref().unwrap())(&fatal));
+        let retriable = FailureDetails {
+            message: "".into(),
+            error_type: "Transient".into(),
+            stack_trace: None,
+        };
+        assert!((p.handle.as_ref().unwrap())(&retriable));
+    }
 }

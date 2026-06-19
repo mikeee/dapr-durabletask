@@ -371,4 +371,106 @@ mod tests {
         assert_eq!(h.events_by_workflow_name("WfA").unwrap().len(), 2);
         assert_eq!(h.workflow_by_name("WfB").unwrap().instance_id, "inst-b");
     }
+
+    #[test]
+    fn scope_roundtrip_own_history() {
+        let scope = HistoryPropagationScope::OwnHistory;
+        let proto_scope: proto::HistoryPropagationScope = scope.into();
+        assert_eq!(proto_scope, proto::HistoryPropagationScope::OwnHistory);
+        let back = HistoryPropagationScope::try_from(proto_scope).unwrap();
+        assert_eq!(back, scope);
+    }
+
+    #[test]
+    fn scope_roundtrip_lineage() {
+        let scope = HistoryPropagationScope::Lineage;
+        let proto_scope: proto::HistoryPropagationScope = scope.into();
+        assert_eq!(proto_scope, proto::HistoryPropagationScope::Lineage);
+        let back = HistoryPropagationScope::try_from(proto_scope).unwrap();
+        assert_eq!(back, scope);
+    }
+
+    #[test]
+    fn scope_none_rejected() {
+        let result = HistoryPropagationScope::try_from(proto::HistoryPropagationScope::None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_proto_own_history_scope() {
+        let p = proto::PropagatedHistory {
+            scope: proto::HistoryPropagationScope::OwnHistory as i32,
+            chunks: vec![raw_chunk("app", "inst", "Wf", 1)],
+        };
+        let h = PropagatedHistory::from_proto(p).unwrap();
+        assert_eq!(h.scope, HistoryPropagationScope::OwnHistory);
+    }
+
+    #[test]
+    fn from_proto_unknown_scope_returns_none() {
+        let p = proto::PropagatedHistory {
+            scope: 999,
+            chunks: vec![],
+        };
+        assert!(PropagatedHistory::from_proto(p).is_none());
+    }
+
+    #[test]
+    fn propagation_not_found_error_display() {
+        let err = PropagationNotFoundError {
+            kind: "workflow",
+            name: "MyWf".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "propagated history: workflow 'MyWf' not found"
+        );
+    }
+
+    #[test]
+    fn propagation_not_found_error_display_app_id() {
+        let err = PropagationNotFoundError {
+            kind: "app id",
+            name: "my-app".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "propagated history: app id 'my-app' not found"
+        );
+    }
+
+    #[test]
+    fn from_proto_empty_chunks() {
+        let p = proto::PropagatedHistory {
+            scope: proto::HistoryPropagationScope::Lineage as i32,
+            chunks: vec![],
+        };
+        let h = PropagatedHistory::from_proto(p).unwrap();
+        assert_eq!(h.scope, HistoryPropagationScope::Lineage);
+        assert!(h.events.is_empty());
+        assert!(h.chunks.is_empty());
+        assert!(h.app_ids().is_empty());
+    }
+
+    #[test]
+    fn from_proto_malformed_event_bytes_silently_dropped() {
+        let bad_chunk = proto::PropagatedHistoryChunk {
+            raw_events: vec![vec![0xFF, 0xFF, 0xFF]], // invalid protobuf
+            app_id: "app".into(),
+            instance_id: "inst".into(),
+            workflow_name: "wf".into(),
+            raw_signatures: vec![],
+            signing_cert_chains: vec![],
+        };
+        let p = proto::PropagatedHistory {
+            scope: proto::HistoryPropagationScope::OwnHistory as i32,
+            chunks: vec![bad_chunk],
+        };
+        let h = PropagatedHistory::from_proto(p).unwrap();
+        assert_eq!(h.chunks.len(), 1);
+        // event_count reflects wire count (1), but decoded events may be 0
+        assert_eq!(h.chunks[0].event_count, 1);
+        assert!(h.events.is_empty());
+        assert!(h.chunks[0].events.is_empty());
+    }
 }
