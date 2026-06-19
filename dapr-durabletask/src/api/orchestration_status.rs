@@ -117,6 +117,79 @@ mod tests {
     }
 
     #[test]
+    fn test_is_terminal_non_terminal_variants() {
+        assert!(!OrchestrationStatus::ContinuedAsNew.is_terminal());
+        assert!(!OrchestrationStatus::Suspended.is_terminal());
+        assert!(!OrchestrationStatus::Stalled.is_terminal());
+    }
+
+    #[test]
+    fn test_is_running_all_non_running() {
+        let non_running = [
+            OrchestrationStatus::Completed,
+            OrchestrationStatus::ContinuedAsNew,
+            OrchestrationStatus::Failed,
+            OrchestrationStatus::Canceled,
+            OrchestrationStatus::Terminated,
+            OrchestrationStatus::Pending,
+            OrchestrationStatus::Suspended,
+            OrchestrationStatus::Stalled,
+        ];
+        for s in non_running {
+            assert!(!s.is_running(), "{s:?} should not be running");
+        }
+    }
+
+    #[test]
+    fn test_negative_i32_returns_error() {
+        assert!(OrchestrationStatus::try_from(-1).is_err());
+        assert_eq!(OrchestrationStatus::try_from(-1).unwrap_err(), -1);
+    }
+
+    #[test]
+    fn test_boundary_i32_value_9_returns_error() {
+        assert!(OrchestrationStatus::try_from(9).is_err());
+        assert_eq!(OrchestrationStatus::try_from(9).unwrap_err(), 9);
+    }
+
+    #[test]
+    fn serde_json_roundtrip() {
+        // Regression: JSON wire shape must remain stable (quoted variant names)
+        let status = OrchestrationStatus::ContinuedAsNew;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, r#""ContinuedAsNew""#);
+        let back: OrchestrationStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, status);
+    }
+
+    #[test]
+    fn serde_json_all_variants_stable() {
+        let expected = [
+            (OrchestrationStatus::Running, r#""Running""#),
+            (OrchestrationStatus::Completed, r#""Completed""#),
+            (OrchestrationStatus::ContinuedAsNew, r#""ContinuedAsNew""#),
+            (OrchestrationStatus::Failed, r#""Failed""#),
+            (OrchestrationStatus::Canceled, r#""Canceled""#),
+            (OrchestrationStatus::Terminated, r#""Terminated""#),
+            (OrchestrationStatus::Pending, r#""Pending""#),
+            (OrchestrationStatus::Suspended, r#""Suspended""#),
+            (OrchestrationStatus::Stalled, r#""Stalled""#),
+        ];
+        for (variant, wire) in expected {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, wire, "wire format mismatch for {variant:?}");
+            let back: OrchestrationStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn serde_json_unknown_variant_rejected() {
+        let result = serde_json::from_str::<OrchestrationStatus>(r#""Unknown""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_display() {
         assert_eq!(OrchestrationStatus::Running.to_string(), "Running");
         assert_eq!(OrchestrationStatus::Completed.to_string(), "Completed");

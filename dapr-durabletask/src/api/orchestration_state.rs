@@ -265,4 +265,161 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn raise_if_failed_ok_for_all_non_failed_statuses() {
+        for status in [
+            OrchestrationStatus::Running,
+            OrchestrationStatus::Completed,
+            OrchestrationStatus::Pending,
+            OrchestrationStatus::Suspended,
+            OrchestrationStatus::ContinuedAsNew,
+            OrchestrationStatus::Terminated,
+            OrchestrationStatus::Canceled,
+            OrchestrationStatus::Stalled,
+        ] {
+            let state = OrchestrationState {
+                instance_id: "i".into(),
+                name: "n".into(),
+                runtime_status: status,
+                created_at: None,
+                last_updated_at: None,
+                serialized_input: None,
+                serialized_output: None,
+                serialized_custom_status: None,
+                failure_details: None,
+            };
+            assert!(
+                state.raise_if_failed().is_ok(),
+                "raise_if_failed should be Ok for {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_workflow_status_defaults_to_running() {
+        let mut ws = make_workflow_state(0);
+        ws.workflow_status = 999;
+        let resp = proto::GetInstanceResponse {
+            exists: true,
+            workflow_state: Some(ws),
+        };
+        let state = OrchestrationState::try_from(&resp).unwrap();
+        assert_eq!(state.runtime_status, OrchestrationStatus::Running);
+    }
+
+    #[test]
+    fn serde_json_roundtrip() {
+        let state = OrchestrationState {
+            instance_id: "test-123".into(),
+            name: "MyOrch".into(),
+            runtime_status: OrchestrationStatus::Completed,
+            created_at: None,
+            last_updated_at: None,
+            serialized_input: Some(r#"{"key":"val"}"#.into()),
+            serialized_output: Some("42".into()),
+            serialized_custom_status: Some(r#""custom""#.into()),
+            failure_details: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: OrchestrationState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.instance_id, "test-123");
+        assert_eq!(back.name, "MyOrch");
+        assert_eq!(back.runtime_status, OrchestrationStatus::Completed);
+        assert_eq!(back.serialized_input.as_deref(), Some(r#"{"key":"val"}"#));
+        assert_eq!(back.serialized_output.as_deref(), Some("42"));
+        assert_eq!(
+            back.serialized_custom_status.as_deref(),
+            Some(r#""custom""#)
+        );
+        assert!(back.failure_details.is_none());
+    }
+
+    #[test]
+    fn serde_json_wire_shape_field_names() {
+        let state = OrchestrationState {
+            instance_id: "id".into(),
+            name: "n".into(),
+            runtime_status: OrchestrationStatus::Running,
+            created_at: None,
+            last_updated_at: None,
+            serialized_input: None,
+            serialized_output: None,
+            serialized_custom_status: None,
+            failure_details: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("instance_id").is_some());
+        assert!(v.get("name").is_some());
+        assert!(v.get("runtime_status").is_some());
+        assert!(v.get("created_at").is_some());
+        assert!(v.get("last_updated_at").is_some());
+        assert!(v.get("serialized_input").is_some());
+        assert!(v.get("serialized_output").is_some());
+        assert!(v.get("serialized_custom_status").is_some());
+        assert!(v.get("failure_details").is_some());
+    }
+
+    #[test]
+    fn serde_json_with_failure_details() {
+        let state = OrchestrationState {
+            instance_id: "i".into(),
+            name: "n".into(),
+            runtime_status: OrchestrationStatus::Failed,
+            created_at: None,
+            last_updated_at: None,
+            serialized_input: None,
+            serialized_output: None,
+            serialized_custom_status: None,
+            failure_details: Some(FailureDetails {
+                message: "err".into(),
+                error_type: "E".into(),
+                stack_trace: None,
+            }),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: OrchestrationState = serde_json::from_str(&json).unwrap();
+        let fd = back.failure_details.unwrap();
+        assert_eq!(fd.message, "err");
+        assert_eq!(fd.error_type, "E");
+        assert!(fd.stack_trace.is_none());
+    }
+
+    #[test]
+    fn try_from_preserves_custom_status() {
+        let mut ws = make_workflow_state(1);
+        ws.custom_status = Some(r#"{"progress":50}"#.into());
+        let resp = proto::GetInstanceResponse {
+            exists: true,
+            workflow_state: Some(ws),
+        };
+        let state = OrchestrationState::try_from(&resp).unwrap();
+        assert_eq!(
+            state.serialized_custom_status.as_deref(),
+            Some(r#"{"progress":50}"#)
+        );
+    }
+
+    #[test]
+    fn try_from_preserves_failure_details() {
+        let mut ws = make_workflow_state(3); // Failed
+        ws.failure_details = Some(proto::TaskFailureDetails {
+            error_type: "Panic".into(),
+            error_message: "thread panic".into(),
+            stack_trace: Some("stack".into()),
+            inner_failure: None,
+            is_non_retriable: false,
+        });
+        let resp = proto::GetInstanceResponse {
+            exists: true,
+            workflow_state: Some(ws),
+        };
+        let state = OrchestrationState::try_from(&resp).unwrap();
+        assert_eq!(state.runtime_status, OrchestrationStatus::Failed);
+        let fd = state.failure_details.unwrap();
+        assert_eq!(fd.message, "thread panic");
+        assert_eq!(fd.error_type, "Panic");
+        assert_eq!(fd.stack_trace.as_deref(), Some("stack"));
+    }
 }

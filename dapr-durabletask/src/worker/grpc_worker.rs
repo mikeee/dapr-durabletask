@@ -563,7 +563,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use tokio::sync::oneshot;
+    use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
     const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -577,6 +577,29 @@ mod tests {
         })
         .await
         .expect("timed out waiting for prune_finished_tasks to drain the JoinSet");
+    }
+
+    async fn spawn_completed_tasks(tasks: &mut JoinSet<()>, count: usize) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for _ in 0..count {
+            let tx = tx.clone();
+            tasks.spawn(async move {
+                let _ = tx.send(());
+            });
+        }
+        drop(tx);
+
+        timeout(WAIT_TIMEOUT, async {
+            for _ in 0..count {
+                rx.recv()
+                    .await
+                    .expect("completed task signal channel closed early");
+            }
+        })
+        .await
+        .expect("timed out waiting for spawned tasks to complete");
+
+        tokio::task::yield_now().await;
     }
 
     #[tokio::test]
@@ -635,5 +658,135 @@ mod tests {
 
         prune_until_empty(&mut tasks).await;
         assert!(tasks.is_empty());
+    }
+
+    /// Simulates repeated waves of short-lived work items arriving while a few
+    /// long-running tasks remain in flight. After each wave, prune must remove
+    /// all completed tasks so the JoinSet never grows unbounded.
+    #[tokio::test]
+    async fn repeated_waves_do_not_accumulate_completed_tasks() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        let mut long_running_senders = Vec::new();
+        const LONG_RUNNING: usize = 3;
+        for _ in 0..LONG_RUNNING {
+            let (tx, rx) = oneshot::channel::<()>();
+            long_running_senders.push(tx);
+            tasks.spawn(async move {
+                let _ = rx.await;
+            });
+        }
+
+        const WAVES: usize = 10;
+        const TASKS_PER_WAVE: usize = 50;
+
+        for _ in 0..WAVES {
+            spawn_completed_tasks(&mut tasks, TASKS_PER_WAVE).await;
+
+            prune_finished_tasks(&mut tasks);
+
+            assert_eq!(
+                tasks.len(),
+                LONG_RUNNING,
+                "single prune pass must remove completed tasks after each wave"
+            );
+        }
+
+        for tx in long_running_senders {
+            let _ = tx.send(());
+        }
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
+    }
+
+    /// High-volume burst: spawn a large number of tasks (simulating a
+    /// busy worker) while some remain in-flight, then verify a single prune
+    /// pass brings the set back to only in-flight tasks.
+    #[tokio::test]
+    async fn high_volume_completed_tasks_pruned_with_in_flight_remaining() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        const IN_FLIGHT: usize = 5;
+        let mut senders = Vec::new();
+        for _ in 0..IN_FLIGHT {
+            let (tx, rx) = oneshot::channel::<()>();
+            senders.push(tx);
+            tasks.spawn(async move {
+                let _ = rx.await;
+            });
+        }
+
+        const BURST_SIZE: usize = 500;
+        spawn_completed_tasks(&mut tasks, BURST_SIZE).await;
+
+        prune_finished_tasks(&mut tasks);
+
+        assert_eq!(tasks.len(), IN_FLIGHT);
+
+        for tx in senders {
+            let _ = tx.send(());
+        }
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
+    }
+
+    /// Verifies that prune_finished_tasks is idempotent: calling it multiple
+    /// times on an already-pruned JoinSet with only in-flight tasks does not
+    /// corrupt state or cause spurious removals.
+    #[tokio::test]
+    async fn prune_is_idempotent_on_only_in_flight_tasks() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        const IN_FLIGHT: usize = 4;
+        let mut senders = Vec::new();
+        for _ in 0..IN_FLIGHT {
+            let (tx, rx) = oneshot::channel::<()>();
+            senders.push(tx);
+            tasks.spawn(async move {
+                let _ = rx.await;
+            });
+        }
+
+        tokio::task::yield_now().await;
+
+        for _ in 0..10 {
+            prune_finished_tasks(&mut tasks);
+            assert_eq!(tasks.len(), IN_FLIGHT);
+        }
+
+        for tx in senders {
+            let _ = tx.send(());
+        }
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
+    }
+
+    /// Simulates a shutdown/drain scenario: all tasks (both short and
+    /// long-running) complete, and repeated prune calls fully drain the set
+    /// without leaking handles.
+    #[tokio::test]
+    async fn shutdown_drain_fully_empties_joinset() {
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        let mut senders = Vec::new();
+        for _ in 0..8 {
+            let (tx, rx) = oneshot::channel::<()>();
+            senders.push(tx);
+            tasks.spawn(async move {
+                let _ = rx.await;
+            });
+        }
+
+        for _ in 0..20 {
+            tasks.spawn(async {});
+        }
+
+        for tx in senders {
+            let _ = tx.send(());
+        }
+
+        prune_until_empty(&mut tasks).await;
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
     }
 }

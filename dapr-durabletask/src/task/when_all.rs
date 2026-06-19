@@ -137,4 +137,146 @@ mod tests {
             other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
         }
     }
+
+    #[test]
+    fn test_when_all_single_task() {
+        let t = CompletableTask::new();
+        t.complete(Some("only".to_string()));
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t]);
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Ok(results)) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0], Some("only".to_string()));
+            }
+            other => panic!("expected Ready(Ok), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_first_failure_short_circuits() {
+        // Regression: when multiple tasks fail, the first failure in iteration
+        // order should be returned due to short-circuit polling.
+        let t1 = CompletableTask::new();
+        let t2 = CompletableTask::new();
+        t1.fail(FailureDetails {
+            message: "first-fail".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+        t2.fail(FailureDetails {
+            message: "second-fail".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t1, t2]);
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Err(DurableTaskError::TaskFailed { message, .. })) => {
+                assert_eq!(
+                    message, "first-fail",
+                    "should short-circuit on first failure"
+                );
+            }
+            other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_failure_while_others_pending() {
+        // Regression: a failure should short-circuit even if other tasks are pending.
+        let t1 = CompletableTask::new();
+        let t2 = CompletableTask::new();
+        t2.fail(FailureDetails {
+            message: "early-fail".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t1, t2]);
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Err(DurableTaskError::TaskFailed { message, .. })) => {
+                assert_eq!(message, "early-fail");
+            }
+            other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_preserves_result_order() {
+        // Regression: results must be in the same order as input tasks,
+        // regardless of completion order.
+        let t1 = CompletableTask::new();
+        let t2 = CompletableTask::new();
+        let t3 = CompletableTask::new();
+        t3.complete(Some("c".to_string()));
+        t2.complete(Some("b".to_string()));
+        t1.complete(Some("a".to_string()));
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t1, t2, t3]);
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Ok(results)) => {
+                assert_eq!(
+                    results,
+                    vec![
+                        Some("a".to_string()),
+                        Some("b".to_string()),
+                        Some("c".to_string()),
+                    ]
+                );
+            }
+            other => panic!("expected Ready(Ok), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_with_none_values() {
+        let t1 = CompletableTask::new();
+        let t2 = CompletableTask::new();
+        t1.complete(None);
+        t2.complete(None);
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t1, t2]);
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Ok(results)) => {
+                assert_eq!(results, vec![None, None]);
+            }
+            other => panic!("expected Ready(Ok), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_many_pending_then_complete_incrementally() {
+        // Regression: tasks completing one at a time; should remain Pending until all done.
+        let tasks: Vec<CompletableTask> = (0..5).map(|_| CompletableTask::new()).collect();
+        let clones = tasks.to_vec();
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(tasks);
+
+        for (i, t) in clones.iter().enumerate() {
+            if i < clones.len() - 1 {
+                t.complete(Some(format!("{i}")));
+                assert!(
+                    Pin::new(&mut fut).poll(&mut cx).is_pending(),
+                    "should still be Pending after completing {}/{} tasks",
+                    i + 1,
+                    clones.len()
+                );
+            }
+        }
+        clones.last().unwrap().complete(Some("last".to_string()));
+        assert!(Pin::new(&mut fut).poll(&mut cx).is_ready());
+    }
 }

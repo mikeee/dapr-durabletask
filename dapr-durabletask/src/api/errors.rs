@@ -131,6 +131,29 @@ mod tests {
     }
 
     #[test]
+    fn display_non_determinism() {
+        let err = DurableTaskError::NonDeterminism {
+            message: "history mismatch".into(),
+        };
+        assert_eq!(err.to_string(), "Non-determinism error: history mismatch");
+    }
+
+    #[test]
+    fn display_orchestration_state_error() {
+        let err = DurableTaskError::OrchestrationState {
+            message: "bad state".into(),
+        };
+        assert_eq!(err.to_string(), "Orchestration state error: bad state");
+    }
+
+    #[test]
+    fn display_serialization_error() {
+        let json_err = serde_json::from_str::<i32>("not a number").unwrap_err();
+        let err = DurableTaskError::Serialization(json_err);
+        assert!(err.to_string().starts_with("Serialisation error:"));
+    }
+
+    #[test]
     fn from_tonic_status() {
         let status = tonic::Status::internal("test");
         let err: DurableTaskError = status.into();

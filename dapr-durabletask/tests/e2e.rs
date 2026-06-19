@@ -65,8 +65,7 @@ impl SidecarHandle {
 
     /// Kill the process and wait for it to exit, freeing the port.
     fn kill(mut self) -> u16 {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        harness::kill_and_wait(&mut self.process);
         self.port
     }
 
@@ -81,8 +80,7 @@ impl SidecarHandle {
 
 impl Drop for SidecarHandle {
     fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        harness::kill_and_wait(&mut self.process);
     }
 }
 
@@ -95,10 +93,6 @@ fn test_reconnect_policy() -> ReconnectPolicy {
         .with_multiplier(2.0)
         .with_jitter(false)
 }
-
-// ===========================================================================
-// E2E Tests — each test has its own isolated sidecar on a free port.
-// ===========================================================================
 
 #[tokio::test]
 async fn test_empty_orchestration() {
@@ -787,7 +781,6 @@ async fn test_human_interaction_three_orchestrations() {
     let guard = WorkerGuard::start(worker);
     let mut client = env.new_client().await;
 
-    // 1. Start orchestrations 1, 2, 3 ─────────────────────────────────────────
     let orders = ["order-1", "order-2", "order-3"];
     let mut instance_ids: Vec<String> = Vec::with_capacity(3);
 
@@ -810,7 +803,6 @@ async fn test_human_interaction_three_orchestrations() {
             .expect("orchestration did not start");
     }
 
-    // 2. Print / assert status of all three ───────────────────────────────────
     for (i, id) in instance_ids.iter().enumerate() {
         let state = client
             .get_orchestration_state(id, false)
@@ -831,7 +823,6 @@ async fn test_human_interaction_three_orchestrations() {
         );
     }
 
-    // 3. Approve 1 → 2 → 3, waiting for each to complete before the next ─────
     let mut completed_outputs: Vec<String> = Vec::with_capacity(3);
 
     for (i, id) in instance_ids.iter().enumerate() {
@@ -877,10 +868,6 @@ async fn test_human_interaction_three_orchestrations() {
     guard.stop().await;
 }
 
-// ===========================================================================
-// Reconnect / backoff tests
-// ===========================================================================
-
 /// The worker should connect and process work even when the sidecar starts
 /// *after* the worker does.
 ///
@@ -911,10 +898,8 @@ async fn test_worker_connects_after_sidecar_starts_late() {
         worker.start(shutdown_clone).await.ok();
     });
 
-    // Give the worker a moment to attempt its first connection.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Now launch the sidecar — the worker should pick it up on the next retry.
     let sidecar = SidecarHandle::launch(port).expect("sidecar binary not found");
     assert!(
         sidecar.wait_ready(Duration::from_secs(5)).await,
@@ -976,10 +961,8 @@ async fn test_worker_reconnects_after_sidecar_restart() {
         worker.start(shutdown_clone).await.ok();
     });
 
-    // Let the worker establish its stream.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Kill the sidecar and restart on the same port.
     let sidecar = sidecar.restart().await.expect("sidecar binary not found");
     assert!(
         sidecar.wait_ready(Duration::from_secs(5)).await,
@@ -1019,7 +1002,6 @@ async fn test_worker_stops_after_max_attempts() {
         return;
     }
 
-    // Nothing is listening on this port.
     let port = harness::free_port();
     let address = format!("http://127.0.0.1:{port}");
 
@@ -1111,9 +1093,7 @@ async fn test_worker_survives_multiple_sidecar_restarts() {
         worker.start(shutdown_clone).await.ok();
     });
 
-    // Two restart cycles.
     for bounce in 1..=2u32 {
-        // Let worker connect.
         tokio::time::sleep(Duration::from_millis(400)).await;
 
         sidecar = sidecar.restart().await.expect("sidecar binary not found");
@@ -1122,7 +1102,6 @@ async fn test_worker_survives_multiple_sidecar_restarts() {
             "sidecar bounce {bounce} did not come up"
         );
 
-        // Let the worker reconnect.
         tokio::time::sleep(Duration::from_millis(600)).await;
 
         let mut client = TaskHubGrpcClient::new(&sidecar.address())
@@ -1199,7 +1178,6 @@ async fn test_worker_drains_in_flight_activity_on_shutdown() {
         .await
         .unwrap();
 
-    // Poll until the activity confirms it has started inside the worker.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if activity_started.load(std::sync::atomic::Ordering::Acquire) {

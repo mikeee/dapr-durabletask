@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use chrono::Datelike;
 use dapr_durabletask::api::DurableTaskError;
 use dapr_durabletask::task::{when_all, when_any};
 use dapr_durabletask::worker::{OrchestrationExecutor, OrchestratorFn, WorkerOptions};
@@ -422,7 +423,6 @@ async fn test_single_activity_scheduling() {
     .await
     .unwrap();
 
-    // Should produce a ScheduleTask action and no CompleteWorkflow
     let schedules = get_schedule_actions(&resp.actions);
     assert_eq!(schedules.len(), 1);
     assert_eq!(schedules[0].name, "greet");
@@ -439,7 +439,6 @@ async fn test_single_activity_completion() {
         })
     });
 
-    // Activity already completed in history
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -468,12 +467,11 @@ async fn test_activity_sequence() {
             let a = ctx.call_activity("step_a", ()).await?;
             let b = ctx.call_activity("step_b", ()).await?;
             let c = ctx.call_activity("step_c", ()).await?;
-            // Return the last result
             Ok(c.or(b).or(a))
         })
     });
 
-    // Round 1: No history — should schedule step_a
+    // Round 1: should schedule step_a
     let resp1 = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -487,7 +485,7 @@ async fn test_activity_sequence() {
     assert_eq!(schedules1[0].name, "step_a");
     assert!(get_complete_action(&resp1.actions).is_none());
 
-    // Round 2: step_a completed — should schedule step_b
+    // Round 2: step_a completed → schedule step_b
     let resp2 = run_executor(
         &orch_fn,
         vec![
@@ -506,7 +504,7 @@ async fn test_activity_sequence() {
     assert_eq!(schedules2[0].name, "step_b");
     assert!(get_complete_action(&resp2.actions).is_none());
 
-    // Round 3: step_a + step_b completed — should schedule step_c
+    // Round 3: step_a + step_b completed → schedule step_c
     let resp3 = run_executor(
         &orch_fn,
         vec![
@@ -527,7 +525,7 @@ async fn test_activity_sequence() {
     assert_eq!(schedules3[0].name, "step_c");
     assert!(get_complete_action(&resp3.actions).is_none());
 
-    // Round 4: All completed — orchestrator completes
+    // Round 4: all completed → orchestrator completes
     let resp4 = run_executor(
         &orch_fn,
         vec![
@@ -789,7 +787,6 @@ async fn test_external_event_received() {
         })
     });
 
-    // Event arrives as a new event
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -811,7 +808,6 @@ async fn test_external_event_received() {
 
 #[tokio::test]
 async fn test_external_event_buffered() {
-    // Event is buffered before wait_for_external_event runs.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -819,7 +815,6 @@ async fn test_external_event_buffered() {
         })
     });
 
-    // Event arrives with the initial execution.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -843,13 +838,11 @@ async fn test_external_event_buffered() {
 async fn test_external_event_case_insensitive() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
-            // Wait for lower-case name.
             let result = ctx.wait_for_external_event("approval").await?;
             Ok(result)
         })
     });
 
-    // Event arrives with upper-case name.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -932,7 +925,6 @@ async fn test_fan_out_scheduling() {
     .await
     .unwrap();
 
-    // Should have 5 ScheduleTask actions and no CompleteWorkflow
     let schedules = get_schedule_actions(&resp.actions);
     assert_eq!(schedules.len(), 5);
     for s in &schedules {
@@ -950,7 +942,6 @@ async fn test_fan_out_fan_in_completion() {
                 tasks.push(ctx.call_activity("worker", i));
             }
             let results = when_all(tasks).await?;
-            // Count completed results
             let count = results.iter().filter(|r| r.is_some()).count();
             Ok(Some(format!("{count}")))
         })
@@ -998,7 +989,6 @@ async fn test_fan_out_partial_failure() {
         })
     });
 
-    // 4 succeed, task at index 2 fails
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -1045,7 +1035,6 @@ async fn test_when_any_first_completes() {
         })
     });
 
-    // Only the second task (index 1) has completed
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -1101,7 +1090,6 @@ async fn test_when_any_with_timer_timeout() {
         cw.workflow_status,
         proto::OrchestrationStatus::Completed as i32
     );
-    // Timer is at index 1
     assert_eq!(cw.result, Some("1".to_string()));
 }
 
@@ -1144,7 +1132,6 @@ async fn test_continue_as_new_with_save_events() {
         })
     });
 
-    // Include a buffered event that should be carried over
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -1161,9 +1148,7 @@ async fn test_continue_as_new_with_save_events() {
         cw.workflow_status,
         proto::OrchestrationStatus::ContinuedAsNew as i32
     );
-    // The buffered event should be carried over
     assert!(!cw.carryover_events.is_empty());
-    // Verify the carryover event
     let carryover = &cw.carryover_events[0];
     match &carryover.event_type {
         Some(EventType::EventRaised(e)) => {
@@ -1191,7 +1176,6 @@ async fn test_suspend_prevents_execution() {
     .await
     .unwrap();
 
-    // No actions should be generated since orchestrator was not run
     assert!(resp.actions.is_empty());
 }
 
@@ -1200,7 +1184,6 @@ async fn test_suspend_and_resume() {
     let orch_fn: OrchestratorFn =
         Arc::new(|_ctx| Box::pin(async { Ok(Some("\"resumed and done\"".to_string())) }));
 
-    // Suspended then resumed — should run normally
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -1241,7 +1224,6 @@ async fn test_terminate_prevents_execution() {
     .await
     .unwrap();
 
-    // Terminated orchestrations produce a CompleteWorkflow action with Terminated status
     assert_eq!(resp.actions.len(), 1);
     match &resp.actions[0].workflow_action_type {
         Some(proto::workflow_action::WorkflowActionType::CompleteWorkflow(cw)) => {
@@ -1289,7 +1271,6 @@ async fn test_custom_status() {
 
 #[tokio::test]
 async fn test_activity_error_handling_with_catch() {
-    // Orchestrator catches a failing activity and calls a compensating activity
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.call_activity("risky_operation", ()).await;
@@ -1318,7 +1299,6 @@ async fn test_activity_error_handling_with_catch() {
     .await
     .unwrap();
 
-    // Should schedule the compensating activity
     let schedules = get_schedule_actions(&resp1.actions);
     assert_eq!(schedules.len(), 1);
     assert_eq!(schedules[0].name, "compensate");
@@ -1354,10 +1334,6 @@ async fn test_activity_error_handling_with_catch() {
 
 #[tokio::test]
 async fn test_multi_round_replay() {
-    // Simulate a multi-round execution:
-    // Round 1: schedule activity A
-    // Round 2: A completed, schedule B
-    // Round 3: B completed, orchestrator completes
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let a = ctx.call_activity("activity_a", "input_a").await?;
@@ -1368,7 +1344,6 @@ async fn test_multi_round_replay() {
         })
     });
 
-    // Round 1: fresh start
     let resp1 = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -1381,7 +1356,6 @@ async fn test_multi_round_replay() {
     assert_eq!(s1.len(), 1);
     assert_eq!(s1[0].name, "activity_a");
 
-    // Round 2: A completed
     let resp2 = run_executor(
         &orch_fn,
         vec![
@@ -1400,7 +1374,6 @@ async fn test_multi_round_replay() {
     assert_eq!(s2[0].name, "activity_b");
     assert!(get_complete_action(&resp2.actions).is_none());
 
-    // Round 3: A and B completed
     let resp3 = run_executor(
         &orch_fn,
         vec![
@@ -1452,7 +1425,7 @@ async fn test_orchestrator_context_accessors() {
 
 #[tokio::test]
 async fn test_activity_with_new_event_completion() {
-    // Activity result arrives in new_events (not old_events)
+    // Activity result arrives in new_events (not old_events).
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.call_activity("greet", ()).await?;
@@ -1482,7 +1455,6 @@ async fn test_activity_with_new_event_completion() {
 
 #[tokio::test]
 async fn test_multiple_suspend_resume_cycles() {
-    // Suspend → Resume → Suspend → Resume should work
     let orch_fn: OrchestratorFn =
         Arc::new(|_ctx| Box::pin(async { Ok(Some("\"alive\"".to_string())) }));
 
@@ -1509,7 +1481,6 @@ async fn test_multiple_suspend_resume_cycles() {
 
 #[tokio::test]
 async fn test_orchestrator_error_becomes_failed() {
-    // Orchestrator returns a non-TaskFailed error
     let orch_fn: OrchestratorFn = Arc::new(|_ctx| {
         Box::pin(async { Err(DurableTaskError::Other("unexpected crash".to_string())) })
     });
@@ -1534,7 +1505,6 @@ async fn test_orchestrator_error_becomes_failed() {
 
 #[tokio::test]
 async fn test_timer_and_activity_sequence() {
-    // Activity → timer → activity
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let _a = ctx.call_activity("step1", ()).await?;
@@ -1544,7 +1514,6 @@ async fn test_timer_and_activity_sequence() {
         })
     });
 
-    // All completed in history
     let fire_at = ts_now() + chrono::Duration::seconds(10);
     let resp = run_executor(
         &orch_fn,
@@ -1573,7 +1542,6 @@ async fn test_timer_and_activity_sequence() {
 
 #[tokio::test]
 async fn test_fan_out_fan_in_with_when_all_empty() {
-    // when_all on empty list completes immediately
     let orch_fn: OrchestratorFn = Arc::new(|_ctx| {
         Box::pin(async move {
             let results = when_all(vec![]).await?;
@@ -1599,7 +1567,6 @@ async fn test_fan_out_fan_in_with_when_all_empty() {
 
 #[tokio::test]
 async fn test_event_not_yet_received() {
-    // Orchestrator waits for an event that hasn't arrived
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -1615,9 +1582,7 @@ async fn test_event_not_yet_received() {
     .await
     .unwrap();
 
-    // No complete action — orchestrator is waiting
     assert!(get_complete_action(&resp.actions).is_none());
-    // Tracking timer records the awaited external event.
     let timers = get_timer_actions(&resp.actions);
     assert_eq!(timers.len(), 1, "should emit a tracking timer");
     assert!(
@@ -1697,7 +1662,6 @@ async fn test_action_ids_are_sequential() {
     .await
     .unwrap();
 
-    // The pending actions should have sequential IDs
     for (i, action) in resp.actions.iter().enumerate() {
         assert_eq!(action.id, i as i32, "Action {i} should have id {i}");
     }
@@ -1723,13 +1687,11 @@ async fn test_sub_orchestration_with_auto_instance_id() {
     let children = get_child_workflow_actions(&resp.actions);
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].name, "child_orch");
-    // Instance ID should be auto-generated (UUID format)
     assert!(!children[0].instance_id.is_empty());
 }
 
 #[tokio::test]
 async fn test_continue_as_new_with_activity_before() {
-    // Activity → continue_as_new
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.call_activity("get_count", ()).await?;
@@ -1741,7 +1703,6 @@ async fn test_continue_as_new_with_activity_before() {
         })
     });
 
-    // Activity returned count=1
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -1768,7 +1729,6 @@ async fn test_external_event_with_null_data() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("signal").await?;
-            // result should be None for null data
             Ok(Some(format!("{}", result.is_none())))
         })
     });
@@ -1803,7 +1763,6 @@ async fn test_custom_status_updated_mid_execution() {
         })
     });
 
-    // step1 completed
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -1817,7 +1776,6 @@ async fn test_custom_status_updated_mid_execution() {
     .await
     .unwrap();
 
-    // Custom status should reflect the last set value
     assert_eq!(resp.custom_status, Some("step 1 done".to_string()));
 }
 
@@ -1836,7 +1794,6 @@ async fn test_terminate_with_output() {
     .await
     .unwrap();
 
-    // Terminated — CompleteWorkflow action with Terminated status and output
     assert_eq!(resp.actions.len(), 1);
     match &resp.actions[0].workflow_action_type {
         Some(proto::workflow_action::WorkflowActionType::CompleteWorkflow(cw)) => {
@@ -1852,7 +1809,6 @@ async fn test_terminate_with_output() {
 
 #[tokio::test]
 async fn test_mixed_event_types_in_replay() {
-    // Replay includes activity, timer and external event.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let a = ctx.call_activity("fetch_data", ()).await?;
@@ -1873,17 +1829,15 @@ async fn test_mixed_event_types_in_replay() {
         vec![
             make_workflow_started(ts_now()),
             make_execution_started("test_orch", None),
-            // Activity at sequence 0.
             make_task_scheduled(3, "fetch_data"),
             make_task_completed(4, 0, Some("\"fetched\"".to_string())),
-            // Timer at sequence 1.
             make_timer_created(5, fire_at),
             make_timer_fired(6, 1),
         ],
-        vec![
-            // External event arrives in new_events.
-            make_event_raised("user_input", Some("\"clicked\"".to_string())),
-        ],
+        vec![make_event_raised(
+            "user_input",
+            Some("\"clicked\"".to_string()),
+        )],
     )
     .await
     .unwrap();
@@ -1893,7 +1847,6 @@ async fn test_mixed_event_types_in_replay() {
         cw.workflow_status,
         proto::OrchestrationStatus::Completed as i32
     );
-    // Inner JSON strings keep their quotes.
     assert_eq!(
         cw.result,
         Some("\"data=\"fetched\",event=\"clicked\"\"".to_string())
@@ -1954,7 +1907,6 @@ fn make_workflow_started_with_patches(
 
 #[tokio::test]
 async fn test_is_patched_new_execution_applies_patch() {
-    // Brand-new orchestration with no history: is_patched returns true → patched path runs.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             if ctx.is_patched("new-feature") {
@@ -1972,21 +1924,17 @@ async fn test_is_patched_new_execution_applies_patch() {
 
 #[tokio::test]
 async fn test_is_patched_mid_replay_uses_unpatched_path() {
-    // History has one TaskScheduled but no history patches → mid-replay → returns false.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             if ctx.is_patched("new-feature") {
-                // patched: schedules "new_act"
                 ctx.call_activity("new_act", ()).await?;
             } else {
-                // unpatched: schedules "old_act"
                 ctx.call_activity("old_act", ()).await?;
             }
             Ok(Some("done".to_string()))
         })
     });
 
-    // History contains the TaskScheduled/Completed for "old_act" at seq 0.
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -2010,7 +1958,6 @@ async fn test_is_patched_mid_replay_uses_unpatched_path() {
 
 #[tokio::test]
 async fn test_is_patched_history_patch_applies() {
-    // History WorkflowStarted event carries the patch name → is_patched returns true.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             if ctx.is_patched("new-feature") {
@@ -2051,7 +1998,6 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn test_retry_activity_succeeds_on_second_attempt() {
-    // First attempt fails, second attempt (after a timer) succeeds.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let opts = ActivityOptions::new()
@@ -2061,7 +2007,6 @@ async fn test_retry_activity_succeeds_on_second_attempt() {
         })
     });
 
-    // seq 0: first attempt fails; seq 1: retry timer fires; seq 2: second attempt succeeds
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -2089,7 +2034,6 @@ async fn test_retry_activity_succeeds_on_second_attempt() {
 
 #[tokio::test]
 async fn test_retry_activity_fails_after_max_attempts() {
-    // All three attempts fail — orchestration should fail.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let opts = ActivityOptions::new()
@@ -2099,7 +2043,6 @@ async fn test_retry_activity_fails_after_max_attempts() {
         })
     });
 
-    // seq 0 fails; seq 1 is the timer; seq 2 fails again — max attempts (2) reached
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -2126,7 +2069,6 @@ async fn test_retry_activity_fails_after_max_attempts() {
 
 #[tokio::test]
 async fn test_retry_activity_predicate_blocks_retry() {
-    // The handle predicate returns false for "FatalError" — no retry.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let policy = RetryPolicy::new(5, Duration::from_secs(1))
@@ -2138,7 +2080,6 @@ async fn test_retry_activity_predicate_blocks_retry() {
         })
     });
 
-    // First attempt fails with FatalError — predicate blocks retry → immediate fail
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -2157,7 +2098,6 @@ async fn test_retry_activity_predicate_blocks_retry() {
         cw.workflow_status,
         proto::OrchestrationStatus::Failed as i32
     );
-    // No timer action should have been scheduled
     let non_complete: Vec<_> = resp
         .actions
         .iter()
@@ -2173,7 +2113,6 @@ async fn test_retry_activity_predicate_blocks_retry() {
 
 #[tokio::test]
 async fn test_retry_activity_predicate_allows_retry() {
-    // The handle predicate returns true for "RetryableError" — retry proceeds.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let policy = RetryPolicy::new(3, Duration::from_secs(1))
@@ -2230,13 +2169,10 @@ async fn test_retry_sub_orchestrator_succeeds_on_second_attempt() {
         vec![
             make_workflow_started(ts_now()),
             make_execution_started("test_orch", None),
-            // seq 0: child workflow created, then fails
             make_sub_orchestration_created(3, "child_orch", "child-1"),
             make_sub_orchestration_failed(4, 0, "ChildError", "child failed"),
-            // seq 1: retry timer
             make_timer_created(5, ts_now() + chrono::Duration::seconds(2)),
             make_timer_fired(6, 1),
-            // seq 2: second child workflow attempt succeeds
             make_sub_orchestration_created(7, "child_orch", "child-1"),
             make_sub_orchestration_completed(8, 2, Some("\"child_ok\"".to_string())),
         ],
@@ -2255,7 +2191,6 @@ async fn test_retry_sub_orchestrator_succeeds_on_second_attempt() {
 
 #[tokio::test]
 async fn test_retry_no_retry_on_success() {
-    // No failures — activity succeeds first try, no timer should be scheduled.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let opts = ActivityOptions::new()
@@ -2411,9 +2346,6 @@ async fn test_no_history_propagation_scope_when_unset() {
 
 #[tokio::test]
 async fn test_propagated_history_lineage_visible_to_child_workflow() {
-    // Parent app -> child receives Lineage history: caller's events plus the
-    // grandparent chunk. The child workflow should observe both chunks via
-    // ctx.propagated_history().
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
     let captured: StdArc<StdMutex<Option<StdArc<PropagatedHistory>>>> =
@@ -2474,7 +2406,6 @@ async fn test_propagated_history_lineage_visible_to_child_workflow() {
 
 #[tokio::test]
 async fn test_propagated_history_own_history_drops_ancestors() {
-    // OwnHistory: child must see the parent's events but NOT the grandparent's.
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
     let captured: StdArc<StdMutex<Option<StdArc<PropagatedHistory>>>> =
@@ -2488,8 +2419,6 @@ async fn test_propagated_history_own_history_drops_ancestors() {
         })
     });
 
-    // OwnHistory means the parent forwarded only its own chunk — no
-    // grandparent chunk is present in the wire payload.
     let propagated = make_propagated_history(
         proto::HistoryPropagationScope::OwnHistory,
         vec![("parent-app", "parent-inst", "Parent", vec![10, 11])],
@@ -2587,7 +2516,6 @@ fn make_timer_created_with_origin(
 
 #[tokio::test]
 async fn test_external_event_with_timeout_event_wins() {
-    // Event arrives before the timeout timer fires.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx
@@ -2603,7 +2531,6 @@ async fn test_external_event_with_timeout_event_wins() {
         })
     });
 
-    // Replay: timer at sequence 0; event arrives before it fires.
     let fire_at = ts_now() + chrono::Duration::seconds(30);
     let origin =
         proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
@@ -2631,7 +2558,6 @@ async fn test_external_event_with_timeout_event_wins() {
 
 #[tokio::test]
 async fn test_external_event_with_timeout_timer_wins() {
-    // Timeout timer fires before the event arrives.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx
@@ -2647,7 +2573,6 @@ async fn test_external_event_with_timeout_timer_wins() {
         })
     });
 
-    // Replay: timer at sequence 0 fires; no event arrived.
     let fire_at = ts_now() + chrono::Duration::seconds(30);
     let origin =
         proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
@@ -2676,7 +2601,6 @@ async fn test_external_event_with_timeout_timer_wins() {
 
 #[tokio::test]
 async fn test_external_event_with_timeout_immediate_event() {
-    // New event wins the when_any race.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx
@@ -2713,7 +2637,6 @@ async fn test_external_event_with_timeout_immediate_event() {
 
 #[tokio::test]
 async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() {
-    // Fresh executions emit a far-future ExternalEvent timer.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -2721,7 +2644,6 @@ async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() 
         })
     });
 
-    // Event arrives immediately.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -2736,7 +2658,6 @@ async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() 
     let cw = get_complete_action(&resp.actions).unwrap();
     assert_eq!(cw.result, Some("\"yes\"".to_string()));
 
-    // Also emits a tracking timer with ExternalEvent origin.
     let timers = get_timer_actions(&resp.actions);
     assert_eq!(timers.len(), 1);
     match &timers[0].origin {
@@ -2745,15 +2666,13 @@ async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() 
         }
         other => panic!("expected ExternalEvent origin, got {other:?}"),
     }
-    // fire_at is far-future (year 9999).
     let fire_at = timers[0].fire_at.as_ref().unwrap();
     let dt = chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32).unwrap();
-    assert!(dt.year() >= 9999, "should be far-future timestamp");
+    assert!(dt.year() >= 9999, "fire_at should be far-future");
 }
 
 #[tokio::test]
 async fn test_generic_timer_has_no_external_event_origin() {
-    // create_timer has no ExternalEvent origin.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let _timer = ctx.create_timer(std::time::Duration::from_secs(10));
@@ -2779,7 +2698,6 @@ async fn test_generic_timer_has_no_external_event_origin() {
 
 #[tokio::test]
 async fn test_wait_for_external_event_with_timeout_action_origin() {
-    // First execution emits an ExternalEvent timer with the requested timeout.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx
@@ -2795,7 +2713,6 @@ async fn test_wait_for_external_event_with_timeout_action_origin() {
         })
     });
 
-    // Event arrives immediately.
     let resp = run_executor(
         &orch_fn,
         vec![make_workflow_started(ts_now())],
@@ -2810,7 +2727,6 @@ async fn test_wait_for_external_event_with_timeout_action_origin() {
     let cw = get_complete_action(&resp.actions).unwrap();
     assert_eq!(cw.result, Some("\"payload\"".to_string()));
 
-    // Timer action has ExternalEvent origin.
     let timers = get_timer_actions(&resp.actions);
     assert_eq!(timers.len(), 1);
     match &timers[0].origin {
@@ -2819,7 +2735,6 @@ async fn test_wait_for_external_event_with_timeout_action_origin() {
         }
         other => panic!("expected ExternalEvent origin, got {other:?}"),
     }
-    // fire_at uses the requested 45-second timeout.
     let fire_at = timers[0].fire_at.as_ref().unwrap();
     let dt = chrono::DateTime::from_timestamp(fire_at.seconds, fire_at.nanos as u32).unwrap();
     assert!(dt.year() < 9999, "should not be far-future");
@@ -2827,8 +2742,7 @@ async fn test_wait_for_external_event_with_timeout_action_origin() {
 
 #[tokio::test]
 async fn test_external_event_with_timeout_backwards_compat_no_origin() {
-    // Old history may not carry an origin on the TimerCreatedEvent.
-    // The SDK should replay correctly (event wins).
+    // Old history without origin on TimerCreatedEvent must still replay correctly.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx
@@ -2845,7 +2759,6 @@ async fn test_external_event_with_timeout_backwards_compat_no_origin() {
     });
 
     let fire_at = ts_now() + chrono::Duration::seconds(30);
-    // Timer in history has NO origin (simulates pre-WEETT history).
     let resp = run_executor(
         &orch_fn,
         vec![
@@ -2868,9 +2781,6 @@ async fn test_external_event_with_timeout_backwards_compat_no_origin() {
 
 #[tokio::test]
 async fn test_wait_for_external_event_replay_with_tracking_timer() {
-    // Replay after a previous execution emitted the far-future tracking timer.
-    // History carries the patch name so is_patched returns true and the
-    // tracking timer is emitted deterministically.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -2896,7 +2806,6 @@ async fn test_wait_for_external_event_replay_with_tracking_timer() {
                 vec!["dapr:external-event-timer".to_string()],
             ),
             make_execution_started("test_orch", None),
-            // Tracking timer at sequence 0.
             make_timer_created_with_origin(3, far_future, Some(origin)),
         ],
         vec![make_event_raised("approval", Some("\"hello\"".to_string()))],
@@ -2914,8 +2823,6 @@ async fn test_wait_for_external_event_replay_with_tracking_timer() {
 
 #[tokio::test]
 async fn test_version_patches_populated_in_response() {
-    // A new execution calling wait_for_external_event should produce
-    // a response with the external-event-timer patch in version.patches.
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
             let result = ctx.wait_for_external_event("approval").await?;
@@ -2937,7 +2844,6 @@ async fn test_version_patches_populated_in_response() {
     let cw = get_complete_action(&resp.actions).unwrap();
     assert_eq!(cw.result, Some("\"yes\"".to_string()));
 
-    // Response must include the patch so the runtime records it.
     let version = resp.version.as_ref().expect("version should be set");
     assert!(
         version
@@ -2950,7 +2856,6 @@ async fn test_version_patches_populated_in_response() {
 
 #[tokio::test]
 async fn test_no_version_patches_when_no_patch_applied() {
-    // An orchestration that does not use is_patched should have version = None.
     let orch_fn: OrchestratorFn =
         Arc::new(|_ctx| Box::pin(async { Ok(Some("\"done\"".to_string())) }));
 
@@ -2968,4 +2873,881 @@ async fn test_no_version_patches_when_no_patch_applied() {
     );
 }
 
-use chrono::Datelike;
+// ===========================================================================
+// Regression: replay / history edge cases
+// ===========================================================================
+
+#[tokio::test]
+async fn test_duplicate_task_completion_is_idempotent() {
+    // Two TaskCompleted events for the same sequence must not panic or
+    // double-complete — the second one is silently ignored.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.call_activity("act", ()).await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "act"),
+            make_task_completed(4, 0, Some("\"first\"".to_string())),
+            // Duplicate completion for same sequence id 0
+            make_task_completed(5, 0, Some("\"second\"".to_string())),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"first\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_duplicate_timer_fired_is_idempotent() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            ctx.create_timer(std::time::Duration::from_secs(10)).await?;
+            Ok(Some("\"ok\"".to_string()))
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(10);
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created(3, fire_at),
+            make_timer_fired(4, 0),
+            make_timer_fired(5, 0),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"ok\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_timer_fired_in_new_events() {
+    // Timer result arrives in new_events (not old_events).
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            ctx.create_timer(std::time::Duration::from_secs(5)).await?;
+            Ok(Some("\"timer done\"".to_string()))
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(5);
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_timer_created(3, fire_at),
+        ],
+        vec![make_timer_fired(4, 0)],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"timer done\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_sub_orchestration_completion_in_new_events() {
+    // Sub-orchestration result arrives in new_events.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .call_sub_orchestrator("child", (), Some("child-1"))
+                .await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_sub_orchestration_created(3, "child", "child-1"),
+        ],
+        vec![make_sub_orchestration_completed(
+            4,
+            0,
+            Some("\"child new\"".to_string()),
+        )],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"child new\"".to_string()));
+}
+
+#[tokio::test]
+async fn test_sub_orchestration_failure_in_new_events() {
+    // Sub-orchestration failure arrives in new_events.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .call_sub_orchestrator("child", (), Some("child-1"))
+                .await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_sub_orchestration_created(3, "child", "child-1"),
+        ],
+        vec![make_sub_orchestration_failed(
+            4,
+            0,
+            "ChildCrash",
+            "child crashed",
+        )],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Failed as i32
+    );
+    let fd = cw.failure_details.as_ref().unwrap();
+    assert_eq!(fd.error_type, "ChildCrash");
+}
+
+// ===========================================================================
+// Regression: terminate prevents orchestrator execution
+// ===========================================================================
+
+#[tokio::test]
+async fn test_terminate_prevents_orchestrator_execution() {
+    let orch_fn: OrchestratorFn = Arc::new(|_ctx| Box::pin(async { panic!("should not run") }));
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "some_activity"),
+        ],
+        vec![make_terminated(Some("\"forced\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp.actions.len(), 1);
+    match &resp.actions[0].workflow_action_type {
+        Some(proto::workflow_action::WorkflowActionType::CompleteWorkflow(cw)) => {
+            assert_eq!(
+                cw.workflow_status,
+                proto::OrchestrationStatus::Terminated as i32
+            );
+            assert_eq!(cw.result, Some("\"forced\"".to_string()));
+        }
+        other => panic!("expected CompleteWorkflow(Terminated), got {other:?}"),
+    }
+}
+
+// ===========================================================================
+// Regression: sub-orchestration failure caught + recovery
+// ===========================================================================
+
+#[tokio::test]
+async fn test_sub_orchestration_failure_caught() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx
+                .call_sub_orchestrator("risky_child", (), Some("c-1"))
+                .await;
+            match result {
+                Ok(v) => Ok(v),
+                Err(DurableTaskError::TaskFailed { .. }) => {
+                    let compensated = ctx.call_activity("fallback", ()).await?;
+                    Ok(compensated)
+                }
+                Err(e) => Err(e),
+            }
+        })
+    });
+
+    let resp1 = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_sub_orchestration_created(3, "risky_child", "c-1"),
+            make_sub_orchestration_failed(4, 0, "ChildErr", "child blew up"),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let sched = get_schedule_actions(&resp1.actions);
+    assert_eq!(sched.len(), 1);
+    assert_eq!(sched[0].name, "fallback");
+    assert!(get_complete_action(&resp1.actions).is_none());
+
+    let resp2 = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_sub_orchestration_created(3, "risky_child", "c-1"),
+            make_sub_orchestration_failed(4, 0, "ChildErr", "child blew up"),
+            make_task_scheduled(5, "fallback"),
+            make_task_completed(6, 1, Some("\"recovered\"".to_string())),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp2.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"recovered\"".to_string()));
+}
+
+// ===========================================================================
+// Regression: multiple same-name events consumed in FIFO order
+// ===========================================================================
+
+#[tokio::test]
+async fn test_same_name_events_consumed_fifo() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let first = ctx.wait_for_external_event("signal").await?;
+            let second = ctx.wait_for_external_event("signal").await?;
+            let first: String =
+                serde_json::from_str(first.as_deref().expect("first signal payload")).unwrap();
+            let second: String =
+                serde_json::from_str(second.as_deref().expect("second signal payload")).unwrap();
+            Ok(Some(
+                serde_json::to_string(&format!("{first},{second}")).unwrap(),
+            ))
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("signal", Some("\"A\"".to_string())),
+            make_event_raised("signal", Some("\"B\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"A,B\"".to_string()));
+}
+
+// ===========================================================================
+// Regression: is_replaying flag
+// ===========================================================================
+
+#[tokio::test]
+async fn test_is_replaying_true_during_replay() {
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+    let was_replaying: StdArc<StdMutex<Option<bool>>> = StdArc::new(StdMutex::new(None));
+    let was_replaying_clone = was_replaying.clone();
+
+    let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
+        let was_replaying = was_replaying_clone.clone();
+        Box::pin(async move {
+            let result = ctx.call_activity("act", ()).await?;
+            *was_replaying.lock().unwrap() = Some(ctx.is_replaying());
+            Ok(result)
+        })
+    });
+
+    let _resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "act"),
+            make_task_completed(4, 0, Some("\"ok\"".to_string())),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(*was_replaying.lock().unwrap(), Some(true));
+}
+
+#[tokio::test]
+async fn test_is_replaying_false_on_new_execution() {
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+    let was_replaying: StdArc<StdMutex<Option<bool>>> = StdArc::new(StdMutex::new(None));
+    let was_replaying_clone = was_replaying.clone();
+
+    let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
+        let was_replaying = was_replaying_clone.clone();
+        Box::pin(async move {
+            *was_replaying.lock().unwrap() = Some(ctx.is_replaying());
+            Ok(Some("\"done\"".to_string()))
+        })
+    });
+
+    let _resp = run_executor(
+        &orch_fn,
+        vec![],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(*was_replaying.lock().unwrap(), Some(false));
+}
+
+// ===========================================================================
+// Regression: current_utc_datetime set from WorkflowStarted
+// ===========================================================================
+
+#[tokio::test]
+async fn test_current_utc_datetime_from_workflow_started() {
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+    let captured_dt: StdArc<StdMutex<Option<chrono::DateTime<chrono::Utc>>>> =
+        StdArc::new(StdMutex::new(None));
+    let captured_clone = captured_dt.clone();
+
+    let fixed_ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let orch_fn: OrchestratorFn = Arc::new(move |ctx| {
+        let captured = captured_clone.clone();
+        Box::pin(async move {
+            *captured.lock().unwrap() = Some(ctx.current_utc_datetime());
+            Ok(None)
+        })
+    });
+
+    let _resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(fixed_ts)],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    let dt = captured_dt.lock().unwrap().unwrap();
+    assert_eq!(
+        dt, fixed_ts,
+        "current_utc_datetime should match WorkflowStarted timestamp"
+    );
+}
+
+// ===========================================================================
+// Regression: suspend with pending activity, then resume + complete
+// ===========================================================================
+
+#[tokio::test]
+async fn test_suspend_with_pending_activity_then_resume_complete() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.call_activity("slow_task", ()).await?;
+            Ok(result)
+        })
+    });
+
+    let resp1 = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "slow_task"),
+        ],
+        vec![make_suspended()],
+    )
+    .await
+    .unwrap();
+
+    assert!(resp1.actions.is_empty(), "suspended → no actions");
+
+    let resp2 = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "slow_task"),
+            make_suspended(),
+            make_resumed(),
+            make_task_completed(4, 0, Some("\"finally\"".to_string())),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp2.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"finally\"".to_string()));
+}
+
+// ===========================================================================
+// Regression: activity completing with None result
+// ===========================================================================
+
+#[tokio::test]
+async fn test_activity_completion_with_none_result() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.call_activity("void_act", ()).await?;
+            Ok(Some(serde_json::to_string(&result.is_none()).unwrap()))
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "void_act"),
+            make_task_completed(4, 0, None),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("true".to_string()));
+}
+
+// ===========================================================================
+// Regression: when_all with all tasks failing
+// ===========================================================================
+
+#[tokio::test]
+async fn test_fan_out_all_fail() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let mut tasks = Vec::new();
+            for i in 0..3 {
+                tasks.push(ctx.call_activity("bad_worker", i));
+            }
+            let results = when_all(tasks).await?;
+            Ok(Some(format!("{}", results.len())))
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "bad_worker"),
+            make_task_failed(4, 0, "Err", "fail 0"),
+            make_task_scheduled(5, "bad_worker"),
+            make_task_failed(6, 1, "Err", "fail 1"),
+            make_task_scheduled(7, "bad_worker"),
+            make_task_failed(8, 2, "Err", "fail 2"),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Failed as i32
+    );
+    let fd = cw.failure_details.as_ref().unwrap();
+    assert_eq!(fd.error_message, "fail 0");
+}
+
+// ===========================================================================
+// Regression: when_any where the winning task is a failure
+// ===========================================================================
+
+#[tokio::test]
+async fn test_when_any_failure_wins() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let t0 = ctx.call_activity("slow", ());
+            let t1 = ctx.call_activity("fails_fast", ());
+            let winner = when_any(vec![t0, t1]).await?;
+            Ok(Some(format!("\"won: {winner}\"")))
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "slow"),
+            make_task_scheduled(4, "fails_fast"),
+            make_task_failed(5, 1, "FastFail", "boom fast"),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"won: 1\"".to_string()));
+}
+
+// ===========================================================================
+// Regression: event buffer limits
+// ===========================================================================
+
+#[tokio::test]
+async fn test_event_buffer_per_name_limit() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let a = ctx.wait_for_external_event("sig").await?;
+            let b = ctx.wait_for_external_event("sig").await?;
+            let c = ctx.wait_for_external_event("sig").await?;
+            let combined = format!(
+                "\"{},{},{}\"",
+                a.as_deref().unwrap_or("none"),
+                b.as_deref().unwrap_or("none"),
+                c.as_deref().unwrap_or("none")
+            );
+            Ok(Some(combined))
+        })
+    });
+
+    let options = WorkerOptions::new().with_max_events_per_name(2);
+    let resp = OrchestrationExecutor::execute(
+        &orch_fn,
+        "test-instance",
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("sig", Some("\"1\"".to_string())),
+            make_event_raised("sig", Some("\"2\"".to_string())),
+            make_event_raised("sig", Some("\"3\"".to_string())),
+        ],
+        String::new(),
+        &options,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        get_complete_action(&resp.actions).is_none(),
+        "should be pending — third event was discarded"
+    );
+}
+
+#[tokio::test]
+async fn test_event_buffer_name_limit() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let a = ctx.wait_for_external_event("alpha").await?;
+            let b = ctx.wait_for_external_event("beta").await?;
+            Ok(Some(format!(
+                "\"{},{}\"",
+                a.as_deref().unwrap_or("none"),
+                b.as_deref().unwrap_or("none")
+            )))
+        })
+    });
+
+    let options = WorkerOptions::new().with_max_event_names(1);
+    let resp = OrchestrationExecutor::execute(
+        &orch_fn,
+        "test-instance",
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("alpha", Some("\"A\"".to_string())),
+            make_event_raised("beta", Some("\"B\"".to_string())),
+        ],
+        String::new(),
+        &options,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        get_complete_action(&resp.actions).is_none(),
+        "should be pending — beta event was discarded"
+    );
+}
+
+// ===========================================================================
+// Regression: activity failure arriving in new_events
+// ===========================================================================
+
+#[tokio::test]
+async fn test_activity_failure_in_new_events() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.call_activity("flakey", ()).await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "flakey"),
+        ],
+        vec![make_task_failed(4, 0, "NewEventFail", "new event failure")],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Failed as i32
+    );
+    let fd = cw.failure_details.as_ref().unwrap();
+    assert_eq!(fd.error_type, "NewEventFail");
+    assert_eq!(fd.error_message, "new event failure");
+}
+
+// ===========================================================================
+// Regression: replay consistency — replaying same history twice
+// ===========================================================================
+
+#[tokio::test]
+async fn test_replay_same_history_produces_consistent_result() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let a = ctx.call_activity("step", ()).await?;
+            ctx.create_timer(std::time::Duration::from_secs(1)).await?;
+            let b = ctx.call_activity("step", ()).await?;
+            let a: String =
+                serde_json::from_str(a.as_deref().expect("first step payload")).unwrap();
+            let b: String =
+                serde_json::from_str(b.as_deref().expect("second step payload")).unwrap();
+            Ok(Some(serde_json::to_string(&format!("{a},{b}")).unwrap()))
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(1);
+    let history = vec![
+        make_workflow_started(ts_now()),
+        make_execution_started("test_orch", None),
+        make_task_scheduled(3, "step"),
+        make_task_completed(4, 0, Some("\"r1\"".to_string())),
+        make_timer_created(5, fire_at),
+        make_timer_fired(6, 1),
+        make_task_scheduled(7, "step"),
+        make_task_completed(8, 2, Some("\"r2\"".to_string())),
+    ];
+
+    let resp1 = run_executor(&orch_fn, history.clone(), vec![])
+        .await
+        .unwrap();
+    let resp2 = run_executor(&orch_fn, history, vec![]).await.unwrap();
+
+    let cw1 = get_complete_action(&resp1.actions).unwrap();
+    let cw2 = get_complete_action(&resp2.actions).unwrap();
+    assert_eq!(
+        cw1.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw1.result, Some("\"r1,r2\"".to_string()));
+    assert_eq!(cw1.result, cw2.result);
+    assert_eq!(cw1.workflow_status, cw2.workflow_status);
+    assert_eq!(resp1.actions.len(), resp2.actions.len());
+}
+
+// ===========================================================================
+// Regression: external event arrives during replay in old_events
+// ===========================================================================
+
+#[tokio::test]
+async fn test_external_event_in_old_events() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let result = ctx.wait_for_external_event("signal").await?;
+            Ok(result)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_event_raised("signal", Some("\"old data\"".to_string())),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result, Some("\"old data\"".to_string()));
+}
+
+// ===========================================================================
+// Regression: activity sequence where middle step arrives in new_events
+// ===========================================================================
+
+#[tokio::test]
+async fn test_activity_sequence_mid_step_in_new_events() {
+    // A is in old_events, B arrives in new_events → should schedule C.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let _a = ctx.call_activity("step_a", ()).await?;
+            let _b = ctx.call_activity("step_b", ()).await?;
+            let c = ctx.call_activity("step_c", ()).await?;
+            Ok(c)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(3, "step_a"),
+            make_task_completed(4, 0, Some("\"a\"".to_string())),
+            make_task_scheduled(5, "step_b"),
+        ],
+        vec![make_task_completed(6, 1, Some("\"b\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    let sched = get_schedule_actions(&resp.actions);
+    assert_eq!(sched.len(), 1);
+    assert_eq!(sched[0].name, "step_c");
+    assert!(get_complete_action(&resp.actions).is_none());
+}
+
+// ===========================================================================
+// Regression: continue_as_new preserves save_events across suspend/resume
+// ===========================================================================
+
+#[tokio::test]
+async fn test_continue_as_new_no_carryover_when_save_events_false() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            ctx.continue_as_new("next", false);
+            Ok(None)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![
+            make_execution_started("test_orch", None),
+            make_event_raised("buffered_event", Some("\"data\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::ContinuedAsNew as i32
+    );
+    assert!(
+        cw.carryover_events.is_empty(),
+        "save_events=false should produce no carryover"
+    );
+}
+
+// ===========================================================================
+// Regression: orchestrator panic becomes failure
+// ===========================================================================
+
+#[tokio::test]
+async fn test_orchestrator_returning_task_failed_error() {
+    let orch_fn: OrchestratorFn = Arc::new(|_ctx| {
+        Box::pin(async {
+            Err(DurableTaskError::TaskFailed {
+                message: "manual fail".to_string(),
+                failure_details: Some(dapr_durabletask::api::FailureDetails {
+                    error_type: "ManualError".to_string(),
+                    message: "manual fail".to_string(),
+                    stack_trace: None,
+                }),
+            })
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![make_workflow_started(ts_now())],
+        vec![make_execution_started("test_orch", None)],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Failed as i32
+    );
+    let fd = cw.failure_details.as_ref().unwrap();
+    assert_eq!(fd.error_type, "ManualError");
+    assert_eq!(fd.error_message, "manual fail");
+}
