@@ -269,6 +269,25 @@ pub struct RerunParentInstanceInfo {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
+/// RetryParentInstanceInfo correlates a child-workflow retry attempt with the
+/// initial attempt that spawned it. When a child workflow is scheduled with a
+/// retry policy, each retry executes as a separate child workflow instance with
+/// its own auto-generated instance ID. This message provides an explicit,
+/// first-class link back to the first attempt so consumers no longer need to
+/// reconstruct the relationship from event ordering and timer origins.
+///
+/// Semantics: the first attempt carries no RetryParentInstanceInfo. Retry
+/// attempts (2nd onward) carry RetryParentInstanceInfo with instanceID set to
+/// the first attempt's instance ID. Consumers group attempts by reading the
+/// parent workflow's history; the group key is retryParentInstanceInfo.instanceID
+/// when present, otherwise the event's own instanceId.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetryParentInstanceInfo {
+    /// instanceID is the instance ID of the first attempt in this child-workflow
+    /// retry chain.
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TraceContext {
     #[prost(string, tag = "1")]
@@ -555,6 +574,13 @@ pub struct ChildWorkflowInstanceCreatedEvent {
     /// the same scope after the action has been discarded.
     #[prost(enumeration = "HistoryPropagationScope", optional, tag = "7")]
     pub history_propagation_scope: ::core::option::Option<i32>,
+    /// If defined, indicates that this child workflow is a retry attempt and
+    /// links it back to the first attempt in the retry chain. Absent on the
+    /// first attempt. Consumers correlate retry attempts by grouping on
+    /// retryParentInstanceInfo.instanceID when present, otherwise on this
+    /// event's own instanceId.
+    #[prost(message, optional, tag = "8")]
+    pub retry_parent_instance_info: ::core::option::Option<RetryParentInstanceInfo>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildWorkflowInstanceCompletedEvent {
@@ -830,8 +856,6 @@ pub struct ScheduleTaskAction {
     pub version: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(message, optional, tag = "4")]
-    pub router: ::core::option::Option<TaskRouter>,
     #[prost(string, tag = "5")]
     pub task_execution_id: ::prost::alloc::string::String,
     /// History propagation scope. Absent/SCOPE_NONE = no propagation.
@@ -848,11 +872,17 @@ pub struct CreateChildWorkflowAction {
     pub version: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "4")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(message, optional, tag = "5")]
-    pub router: ::core::option::Option<TaskRouter>,
     /// History propagation scope. Absent/SCOPE_NONE = no propagation.
     #[prost(enumeration = "HistoryPropagationScope", optional, tag = "6")]
     pub history_propagation_scope: ::core::option::Option<i32>,
+    /// If defined, indicates that this child workflow is a retry attempt and
+    /// links it back to the first attempt in the retry chain. Absent on the
+    /// first attempt. The runtime persists this onto the resulting
+    /// ChildWorkflowInstanceCreatedEvent so consumers can correlate retry
+    /// attempts by grouping on retryParentInstanceInfo.instanceID when present,
+    /// otherwise on the created instance's own instanceId.
+    #[prost(message, optional, tag = "7")]
+    pub retry_parent_instance_info: ::core::option::Option<RetryParentInstanceInfo>,
 }
 /// CreateDetachedWorkflowAction creates a new, detached workflow instance from
 /// a running workflow. Mirrors the fields of CreateInstanceRequest (the client
@@ -891,8 +921,6 @@ pub struct CreateDetachedWorkflowAction {
     >,
     #[prost(message, optional, tag = "8")]
     pub parent_trace_context: ::core::option::Option<TraceContext>,
-    #[prost(message, optional, tag = "9")]
-    pub router: ::core::option::Option<TaskRouter>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateTimerAction {
@@ -1025,6 +1053,28 @@ pub struct ActivityResponse {
     #[prost(string, tag = "5")]
     pub completion_token: ::prost::alloc::string::String,
 }
+/// CachedHistory is set on a WorkflowRequest when the service has intentionally
+/// omitted the committed history prefix the worker is expected to already hold
+/// for this instance from a previous turn on the same stream (see
+/// WORKER_CAPABILITY_STATEFUL_HISTORY). Its presence means pastEvents carries
+/// only the delta since the worker was last brought up to date; its absence
+/// means pastEvents is the full committed history. The worker reconstructs the
+/// full past history by prepending its cached events to pastEvents. The service
+/// only sets this for workers that advertised
+/// WORKER_CAPABILITY_STATEFUL_HISTORY and that it believes to be warm for the
+/// instance, so it is always safe for a worker to fall back to the
+/// GetInstanceHistory RPC.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CachedHistory {
+    /// eventCount is the number of leading (committed) history events the
+    /// service believes the worker already holds, i.e. the length of the prefix
+    /// omitted from pastEvents. The worker's cached prefix must contain exactly
+    /// this many events; if it does not, the worker must treat this as a cache
+    /// miss and fetch the full history via GetInstanceHistory before applying
+    /// newEvents.
+    #[prost(int32, tag = "1")]
+    pub event_count: i32,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowRequest {
     #[prost(string, tag = "1")]
@@ -1044,6 +1094,12 @@ pub struct WorkflowRequest {
     /// workflow function can access it via ctx.
     #[prost(message, optional, tag = "8")]
     pub propagated_history: ::core::option::Option<PropagatedHistory>,
+    /// cachedHistory, when present, signals that pastEvents holds only the
+    /// delta and the worker must reconstruct the omitted prefix from its own
+    /// cache (or fetch it via GetInstanceHistory on a miss). Absent for
+    /// full-history sends.
+    #[prost(message, optional, tag = "9")]
+    pub cached_history: ::core::option::Option<CachedHistory>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowResponse {
@@ -1083,6 +1139,18 @@ pub struct CreateInstanceRequest {
     >,
     #[prost(message, optional, tag = "9")]
     pub parent_trace_context: ::core::option::Option<TraceContext>,
+    /// When true, the request fails with an ALREADY_EXISTS error if a workflow
+    /// instance with the same instanceId already exists, whether active or
+    /// completed. When false, an existing completed instance is restarted.
+    #[prost(bool, tag = "10")]
+    pub enforce_unique_instance_id: bool,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. When targetAppID names a different app, the operation is
+    /// executed against that app's instance (same namespace unless
+    /// targetAppNamespace is set). sourceAppID is stamped by the sidecar, not
+    /// the client.
+    #[prost(message, optional, tag = "11")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateInstanceResponse {
@@ -1095,6 +1163,10 @@ pub struct GetInstanceRequest {
     pub instance_id: ::prost::alloc::string::String,
     #[prost(bool, tag = "2")]
     pub get_inputs_and_outputs: bool,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "3")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetInstanceResponse {
@@ -1111,6 +1183,10 @@ pub struct RaiseEventRequest {
     pub name: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "4")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 /// No payload
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1123,6 +1199,10 @@ pub struct TerminateRequest {
     pub output: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag = "3")]
     pub recursive: bool,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "4")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 /// No payload
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1133,6 +1213,10 @@ pub struct SuspendRequest {
     pub instance_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "2")]
     pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "3")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 /// No payload
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1143,6 +1227,10 @@ pub struct ResumeRequest {
     pub instance_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "2")]
     pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "3")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 /// No payload
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1162,6 +1250,12 @@ pub struct PurgeInstancesRequest {
     /// Defaults to false.
     #[prost(bool, optional, tag = "4")]
     pub force: ::core::option::Option<bool>,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. Cross-app purges are delegated to the target app in
+    /// full, so they are always recursive on the remote side. sourceAppID is
+    /// stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "5")]
+    pub router: ::core::option::Option<TaskRouter>,
     #[prost(oneof = "purge_instances_request::Request", tags = "1, 2")]
     pub request: ::core::option::Option<purge_instances_request::Request>,
 }
@@ -1191,8 +1285,15 @@ pub struct PurgeInstancesResponse {
     #[prost(message, optional, tag = "2")]
     pub is_complete: ::core::option::Option<bool>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetWorkItemsRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetWorkItemsRequest {
+    /// capabilities advertises the optional protocol features this worker
+    /// supports, so the service can opt into optimizations on a per-stream
+    /// basis. Workers that leave this empty receive the default (fully
+    /// self-contained) behavior.
+    #[prost(enumeration = "WorkerCapability", repeated, tag = "4")]
+    pub capabilities: ::prost::alloc::vec::Vec<i32>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkItem {
     #[prost(string, tag = "10")]
@@ -1245,6 +1346,10 @@ pub struct RerunWorkflowFromEventRequest {
     pub new_child_workflow_instance_id: ::core::option::Option<
         ::prost::alloc::string::String,
     >,
+    /// router optionally routes this operation to the workflow instance owned
+    /// by another app. sourceAppID is stamped by the sidecar, not the client.
+    #[prost(message, optional, tag = "7")]
+    pub router: ::core::option::Option<TaskRouter>,
 }
 /// RerunWorkflowFromEventResponse is the response to executing
 /// RerunWorkflowFromEvent.
@@ -1294,11 +1399,16 @@ pub struct GetInstanceHistoryResponse {
 #[repr(i32)]
 pub enum WorkerCapability {
     Unspecified = 0,
-    /// Indicates that the worker is capable of streaming instance history as a more optimized
-    /// alternative to receiving the full history embedded in the workflow work-item.
-    /// When set, the service may return work items without any history events as an optimization.
-    /// It is strongly recommended that all SDKs support this capability.
-    HistoryStreaming = 1,
+    /// Indicates that the worker retains an instance's accumulated history in
+    /// memory between workflow turns on the same work-item stream, so that the
+    /// service can send only the new events (the delta) instead of the full
+    /// history each turn. When the service has dispatched a turn for an
+    /// instance to this stream and believes the stream is still warm for it, it
+    /// may set WorkflowRequest.cachedHistory and drop the committed-history
+    /// prefix the worker already holds from pastEvents, leaving only the delta
+    /// there. On a cache miss the worker recovers the full history via the
+    /// GetInstanceHistory RPC, so the optimization never affects correctness.
+    StatefulHistory = 2,
 }
 impl WorkerCapability {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1308,14 +1418,14 @@ impl WorkerCapability {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "WORKER_CAPABILITY_UNSPECIFIED",
-            Self::HistoryStreaming => "WORKER_CAPABILITY_HISTORY_STREAMING",
+            Self::StatefulHistory => "WORKER_CAPABILITY_STATEFUL_HISTORY",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "WORKER_CAPABILITY_UNSPECIFIED" => Some(Self::Unspecified),
-            "WORKER_CAPABILITY_HISTORY_STREAMING" => Some(Self::HistoryStreaming),
+            "WORKER_CAPABILITY_STATEFUL_HISTORY" => Some(Self::StatefulHistory),
             _ => None,
         }
     }
