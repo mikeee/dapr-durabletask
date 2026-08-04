@@ -102,6 +102,11 @@ pub struct CreateWorkflowInstanceRequest {
     pub propagated_history: ::core::option::Option<
         super::super::super::super::PropagatedHistory,
     >,
+    /// When true, the request fails with an ALREADY_EXISTS error if a workflow
+    /// instance with the same instanceId already exists, whether active or
+    /// completed. When false, an existing completed instance is restarted.
+    #[prost(bool, tag = "4")]
+    pub enforce_unique_instance_id: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowMetadata {
