@@ -165,6 +165,7 @@ fn make_sub_orchestration_created(
                 parent_trace_context: None,
                 rerun_parent_instance_info: None,
                 history_propagation_scope: None,
+                retry_parent_instance_info: None,
             },
         )),
     }

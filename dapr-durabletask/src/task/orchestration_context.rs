@@ -247,13 +247,12 @@ impl OrchestrationContext {
         });
         let action = proto::WorkflowAction {
             id: seq,
-            router: None,
+            router,
             workflow_action_type: Some(proto::workflow_action::WorkflowActionType::ScheduleTask(
                 proto::ScheduleTaskAction {
                     name: name.to_string(),
                     version: None,
                     input: input_json,
-                    router,
                     task_execution_id: String::new(),
                     history_propagation_scope: history_propagation_scope
                         .map(|s| s.to_proto() as i32),
@@ -398,7 +397,7 @@ impl OrchestrationContext {
 
         let action = proto::WorkflowAction {
             id: seq,
-            router: None,
+            router,
             workflow_action_type: Some(
                 proto::workflow_action::WorkflowActionType::CreateChildWorkflow(
                     proto::CreateChildWorkflowAction {
@@ -406,9 +405,9 @@ impl OrchestrationContext {
                         name: name.to_string(),
                         version: None,
                         input: input_json,
-                        router,
                         history_propagation_scope: history_propagation_scope
                             .map(|s| s.to_proto() as i32),
+                        retry_parent_instance_info: None,
                     },
                 ),
             ),
@@ -1006,12 +1005,15 @@ mod tests {
 
         let inner = ctx.inner.lock().unwrap();
         assert_eq!(inner.sequence_number, 1);
+        let router = inner.pending_actions[0]
+            .router
+            .as_ref()
+            .expect("expected router");
+        assert_eq!(router.target_app_id, Some("other-app".to_string()));
         match &inner.pending_actions[0].workflow_action_type {
             Some(proto::workflow_action::WorkflowActionType::CreateChildWorkflow(a)) => {
                 assert_eq!(a.name, "child_orch");
                 assert_eq!(a.instance_id, "child-1");
-                let router = a.router.as_ref().expect("expected router");
-                assert_eq!(router.target_app_id, Some("other-app".to_string()));
             }
             _ => panic!("expected CreateChildWorkflow action"),
         }
