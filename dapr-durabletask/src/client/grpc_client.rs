@@ -193,6 +193,8 @@ impl TaskHubGrpcClient {
             execution_id: None,
             tags: std::collections::HashMap::new(),
             parent_trace_context,
+            enforce_unique_instance_id: false,
+            router: None,
         };
 
         let response = self.inner.start_instance(request).await?;
@@ -224,6 +226,7 @@ impl TaskHubGrpcClient {
         let request = proto::GetInstanceRequest {
             instance_id: instance_id.to_string(),
             get_inputs_and_outputs: fetch_payloads,
+            router: None,
         };
         let response = self.inner.get_instance(request).await?;
         Ok(OrchestrationState::try_from(&response.into_inner()).ok())
@@ -251,6 +254,7 @@ impl TaskHubGrpcClient {
         let request = proto::GetInstanceRequest {
             instance_id: instance_id.to_string(),
             get_inputs_and_outputs: fetch_payloads,
+            router: None,
         };
 
         let fut = self.inner.wait_for_instance_start(request);
@@ -294,6 +298,7 @@ impl TaskHubGrpcClient {
         let request = proto::GetInstanceRequest {
             instance_id: instance_id.to_string(),
             get_inputs_and_outputs: fetch_payloads,
+            router: None,
         };
 
         let fut = self.inner.wait_for_instance_completion(request);
@@ -345,6 +350,7 @@ impl TaskHubGrpcClient {
             instance_id: instance_id.to_string(),
             name: event_name.to_string(),
             input: data,
+            router: None,
         };
         self.inner.raise_event(request).await?;
         Ok(())
@@ -375,6 +381,7 @@ impl TaskHubGrpcClient {
             instance_id: instance_id.to_string(),
             output,
             recursive,
+            router: None,
         };
         self.inner.terminate_instance(request).await?;
         Ok(())
@@ -399,6 +406,7 @@ impl TaskHubGrpcClient {
         let request = proto::SuspendRequest {
             instance_id: instance_id.to_string(),
             reason,
+            router: None,
         };
         self.inner.suspend_instance(request).await?;
         Ok(())
@@ -423,6 +431,7 @@ impl TaskHubGrpcClient {
         let request = proto::ResumeRequest {
             instance_id: instance_id.to_string(),
             reason,
+            router: None,
         };
         self.inner.resume_instance(request).await?;
         Ok(())
@@ -448,6 +457,7 @@ impl TaskHubGrpcClient {
             )),
             recursive,
             force: None,
+            router: None,
         };
         let response = self.inner.purge_instances(request).await?;
         let count = response.into_inner().deleted_instance_count;
@@ -488,6 +498,7 @@ impl TaskHubGrpcClient {
             ),
             recursive,
             force: None,
+            router: None,
         };
         let response = self.inner.purge_instances(request).await?;
         let count = response.into_inner().deleted_instance_count;

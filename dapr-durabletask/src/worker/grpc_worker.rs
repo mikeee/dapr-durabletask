@@ -187,7 +187,9 @@ impl TaskHubGrpcWorker {
         options: &Arc<WorkerOptions>,
         shutdown: &tokio_util::sync::CancellationToken,
     ) -> crate::api::Result<()> {
-        let request = proto::GetWorkItemsRequest {};
+        let request = proto::GetWorkItemsRequest {
+            capabilities: Vec::new(),
+        };
         let mut stream = client.get_work_items(request).await?.into_inner();
         let semaphore = Arc::new(Semaphore::new(options.max_concurrent_work_items));
         let mut tasks: JoinSet<()> = JoinSet::new();
