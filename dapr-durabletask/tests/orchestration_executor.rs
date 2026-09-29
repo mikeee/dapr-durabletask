@@ -2636,6 +2636,75 @@ async fn test_external_event_with_timeout_immediate_event() {
     assert_eq!(cw.result, Some("\"instant\"".to_string()));
 }
 
+// The runtime rejects a turn that re-creates an operation already in history
+// (daprd 1.18.4+), so in-flight actions must not be re-emitted on replay.
+#[tokio::test]
+async fn test_replay_does_not_reemit_scheduled_actions() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            ctx.call_activity("step_a", ()).await?;
+            ctx.wait_for_external_event_with_timeout(
+                "approval",
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+            ctx.call_activity("step_b", ()).await
+        })
+    });
+
+    let fire_at = ts_now() + chrono::Duration::seconds(60);
+    let origin =
+        proto::timer_created_event::Origin::ExternalEvent(proto::TimerOriginExternalEvent {
+            name: "approval".to_string(),
+        });
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(0, "step_a"),
+            make_task_completed(-1, 0, None),
+            make_timer_created_with_origin(1, fire_at, Some(origin)),
+        ],
+        vec![make_event_raised("approval", Some("\"yes\"".to_string()))],
+    )
+    .await
+    .unwrap();
+
+    assert!(get_timer_actions(&resp.actions).is_empty());
+    let schedules = get_schedule_actions(&resp.actions);
+    assert_eq!(schedules.len(), 1);
+    assert_eq!(schedules[0].name, "step_b");
+    assert_eq!(resp.actions[0].id, 2);
+}
+
+#[tokio::test]
+async fn test_replay_does_not_reemit_in_flight_activity_or_child() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let activity = ctx.call_activity("step_a", ());
+            let child = ctx.call_sub_orchestrator("child_orch", (), Some("child-1"));
+            when_all(vec![activity, child]).await?;
+            Ok(None)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(0, "step_a"),
+            make_sub_orchestration_created(1, "child_orch", "child-1"),
+        ],
+        vec![make_event_raised("unrelated", None)],
+    )
+    .await
+    .unwrap();
+
+    assert!(resp.actions.is_empty(), "{:?}", resp.actions);
+}
+
 #[tokio::test]
 async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {

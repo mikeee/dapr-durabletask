@@ -71,6 +71,9 @@ pub(crate) struct OrchestrationContextInner {
     /// (TaskScheduled + TimerCreated + ChildWorkflowInstanceCreated).
     /// Used to determine whether `is_patched` is called mid-history or at the frontier.
     pub(crate) history_scheduled_count: i32,
+    /// Event IDs of the scheduled actions recorded in history. Actions with
+    /// these IDs are already known to the runtime and must not be re-emitted.
+    pub(crate) history_scheduled_ids: std::collections::HashSet<i32>,
     /// History forwarded from the parent workflow (if any). Populated from
     /// the `WorkflowRequest.propagated_history` field.
     pub(crate) propagated_history: Option<Arc<PropagatedHistory>>,
@@ -127,6 +130,7 @@ impl OrchestrationContext {
                 history_patches: std::collections::HashSet::new(),
                 applied_patches: HashMap::new(),
                 history_scheduled_count: 0,
+                history_scheduled_ids: std::collections::HashSet::new(),
                 propagated_history: None,
             })),
         }
