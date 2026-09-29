@@ -2679,6 +2679,33 @@ async fn test_replay_does_not_reemit_scheduled_actions() {
 }
 
 #[tokio::test]
+async fn test_replay_does_not_reemit_in_flight_activity_or_child() {
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let activity = ctx.call_activity("step_a", ());
+            let child = ctx.call_sub_orchestrator("child_orch", (), Some("child-1"));
+            when_all(vec![activity, child]).await?;
+            Ok(None)
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(0, "step_a"),
+            make_sub_orchestration_created(1, "child_orch", "child-1"),
+        ],
+        vec![make_event_raised("unrelated", None)],
+    )
+    .await
+    .unwrap();
+
+    assert!(resp.actions.is_empty(), "{:?}", resp.actions);
+}
+
+#[tokio::test]
 async fn test_wait_for_external_event_emits_far_future_timer_in_new_execution() {
     let orch_fn: OrchestratorFn = Arc::new(|ctx| {
         Box::pin(async move {
