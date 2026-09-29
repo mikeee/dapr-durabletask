@@ -353,6 +353,7 @@ impl OrchestrationExecutor {
             | EventType::TimerCreated(_)
             | EventType::ChildWorkflowInstanceCreated(_) => {
                 inner.history_scheduled_count += 1;
+                inner.history_scheduled_ids.insert(event.event_id);
             }
             EventType::TimerFired(e) => {
                 let seq = e.timer_id;
@@ -541,6 +542,9 @@ impl OrchestrationExecutor {
         // Move actions out instead of cloning — the context is consumed after
         // this response is built, so the original Vec is no longer needed.
         let mut actions = std::mem::take(&mut inner.pending_actions);
+        // Operations already scheduled in history but not yet completed are
+        // re-created on replay; only new actions go back to the runtime.
+        actions.retain(|a| !inner.history_scheduled_ids.contains(&a.id));
 
         if let Some(new_input) = inner.continue_as_new_input.take() {
             let mut carryover_events = Vec::new();
