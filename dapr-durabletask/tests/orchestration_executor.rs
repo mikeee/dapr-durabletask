@@ -6927,3 +6927,755 @@ async fn test_held_events_apply_in_order_on_resume() {
         assert_eq!(cw.result.as_deref(), Some("\"timed out\""));
     }
 }
+
+/// Property-style replay tests: a small runtime simulator (mirroring the
+/// durabletask-go backend applier) drives workflow programs turn by turn
+/// with seeded delivery orders and batch sizes. Every turn checks replay
+/// invariants, and variants of a run (suspension, split batches, duplicate
+/// events, terminate) must reach the same outcome as the baseline run.
+mod replay_properties {
+    use std::collections::{BTreeMap, HashSet};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use dapr_durabletask::api::{DurableTaskError, ExternalEventResult, RetryPolicy};
+    use dapr_durabletask::task::{ActivityOptions, OrchestrationContext, when_all, when_any};
+    use dapr_durabletask::worker::{OrchestrationExecutor, OrchestratorFn, WorkerOptions};
+    use dapr_durabletask_proto as proto;
+    use dapr_durabletask_proto::history_event::EventType;
+    use dapr_durabletask_proto::workflow_action::WorkflowActionType;
+
+    const SEEDS: u64 = 40;
+
+    // ── Programs ────────────────────────────────────────────────────────────
+
+    type Program =
+        fn(
+            OrchestrationContext,
+        )
+            -> futures::future::BoxFuture<'static, dapr_durabletask::api::Result<Option<String>>>;
+
+    fn json(v: impl serde::Serialize) -> Option<String> {
+        Some(serde_json::to_string(&v).unwrap())
+    }
+
+    fn val(s: Option<String>) -> serde_json::Value {
+        s.map(|s| serde_json::from_str(&s).unwrap())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn programs() -> Vec<(&'static str, Program)> {
+        vec![
+            ("sequential", |ctx| {
+                Box::pin(async move {
+                    let a = ctx.call_activity("double", 1).await?;
+                    let b = ctx.call_activity("double", val(a)).await?;
+                    Ok(json(val(b)))
+                })
+            }),
+            ("fan_out_fan_in", |ctx| {
+                Box::pin(async move {
+                    let tasks = (0..5).map(|i| ctx.call_activity("double", i)).collect();
+                    let results = when_all(tasks).await?;
+                    Ok(json(results.into_iter().map(val).collect::<Vec<_>>()))
+                })
+            }),
+            ("when_any_race", |ctx| {
+                Box::pin(async move {
+                    let work = ctx.call_activity("double", 7);
+                    let timer = ctx.create_timer(Duration::from_secs(5));
+                    let winner = when_any(vec![work, timer]).await?;
+                    Ok(json(winner))
+                })
+            }),
+            ("timer_then_activity", |ctx| {
+                Box::pin(async move {
+                    ctx.create_timer(Duration::from_secs(1)).await?;
+                    let r = ctx.call_activity("double", 3).await?;
+                    Ok(json(val(r)))
+                })
+            }),
+            ("external_event", |ctx| {
+                Box::pin(async move {
+                    let data = ctx.wait_for_external_event("go").await?;
+                    let r = ctx.call_activity("double", val(data)).await?;
+                    Ok(json(val(r)))
+                })
+            }),
+            ("event_or_timeout", |ctx| {
+                Box::pin(async move {
+                    let first = ctx
+                        .wait_for_external_event_with_timeout("ev", Duration::from_secs(10))
+                        .await?;
+                    let second = ctx
+                        .wait_for_external_event_with_timeout("ev", Duration::from_secs(10))
+                        .await?;
+                    let label = |r: ExternalEventResult| match r {
+                        ExternalEventResult::Received(d) => format!("received:{}", val(d)),
+                        ExternalEventResult::TimedOut => "timed_out".to_string(),
+                    };
+                    Ok(json((label(first), label(second))))
+                })
+            }),
+            ("child_workflow", |ctx| {
+                Box::pin(async move {
+                    let r = ctx.call_sub_orchestrator("child", 4, None).await?;
+                    let d = ctx.call_activity("double", val(r)).await?;
+                    Ok(json(val(d)))
+                })
+            }),
+            ("retries", |ctx| {
+                Box::pin(async move {
+                    let opts = ActivityOptions::new()
+                        .with_retry_policy(RetryPolicy::new(4, Duration::from_secs(1)));
+                    let r = ctx.call_activity_with_options("flaky", 5, opts).await?;
+                    Ok(json(val(r)))
+                })
+            }),
+            ("concurrent_branches", |ctx| {
+                Box::pin(async move {
+                    let a = {
+                        let ctx = ctx.clone();
+                        async move {
+                            let x = ctx.call_activity("double", 1).await?;
+                            ctx.call_activity("double", val(x)).await
+                        }
+                    };
+                    let b = {
+                        let ctx = ctx.clone();
+                        async move {
+                            let x = ctx.call_activity("double", 10).await?;
+                            ctx.call_activity("double", val(x)).await
+                        }
+                    };
+                    let (a, b) = futures::join!(a, b);
+                    Ok(json((val(a?), val(b?))))
+                })
+            }),
+            ("caught_failure", |ctx| {
+                Box::pin(async move {
+                    let r = match ctx.call_activity("boom", ()).await {
+                        Err(DurableTaskError::TaskFailed { .. }) => {
+                            ctx.call_activity("double", 100).await?
+                        }
+                        other => other?,
+                    };
+                    ctx.set_custom_status("recovered");
+                    Ok(json(val(r)))
+                })
+            }),
+            ("continue_as_new", |ctx| {
+                Box::pin(async move {
+                    let r = ctx.call_activity("double", 2).await?;
+                    ctx.continue_as_new(val(r), true);
+                    Ok(None)
+                })
+            }),
+        ]
+    }
+
+    // ── Simulated runtime ───────────────────────────────────────────────────
+
+    /// Deterministic PRNG (xorshift64*).
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+        }
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Result of an activity: a pure function of name and input, except
+    /// "flaky" (fails its first two attempts) and "boom" (always fails).
+    fn activity_result(
+        name: &str,
+        input: Option<&str>,
+        attempt: u32,
+    ) -> Result<Option<String>, String> {
+        let n = input
+            .and_then(|i| serde_json::from_str::<i64>(i).ok())
+            .unwrap_or(0);
+        match name {
+            "boom" => Err("boom".into()),
+            "flaky" if attempt < 2 => Err(format!("attempt {attempt}")),
+            _ => Ok(json(n * 2)),
+        }
+    }
+
+    fn event(event_id: i32, et: EventType, ts: i64) -> proto::HistoryEvent {
+        proto::HistoryEvent {
+            event_id,
+            timestamp: Some(proto::prost_types::Timestamp {
+                seconds: ts,
+                nanos: 0,
+            }),
+            router: None,
+            event_type: Some(et),
+        }
+    }
+
+    /// Identity of a deliverable event, used to rank delivery order.
+    fn identity(e: &proto::HistoryEvent) -> (u8, i32, String) {
+        match &e.event_type {
+            Some(EventType::TaskCompleted(t)) => (1, t.task_scheduled_id, String::new()),
+            Some(EventType::TaskFailed(t)) => (2, t.task_scheduled_id, String::new()),
+            Some(EventType::TimerFired(t)) => (3, t.timer_id, String::new()),
+            Some(EventType::ChildWorkflowInstanceCompleted(t)) => {
+                (4, t.task_scheduled_id, String::new())
+            }
+            Some(EventType::EventRaised(r)) => (5, 0, format!("{r:?}")),
+            _ => (9, e.event_id, String::new()),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Variant {
+        Baseline,
+        /// Deliver this turn's events inside ExecutionSuspended/Resumed,
+        /// optionally with the resume in the next turn.
+        Suspend {
+            turn: usize,
+            resume_next_turn: bool,
+        },
+        /// Deliver this turn's events across two turns.
+        Split {
+            turn: usize,
+        },
+        /// Deliver one of this turn's completions twice.
+        DuplicateCompletion {
+            turn: usize,
+        },
+        /// Persist a duplicate of the scheduling events of this turn's
+        /// response (as older runtimes did).
+        DuplicateScheduling {
+            turn: usize,
+        },
+        /// Deliver a terminate after this turn's events.
+        Terminate {
+            turn: usize,
+        },
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Outcome {
+        status: i32,
+        result: Option<String>,
+        failure_type: Option<String>,
+        custom_status: Option<String>,
+    }
+
+    struct Sim {
+        program: Program,
+        history: Vec<proto::HistoryEvent>,
+        available: Vec<proto::HistoryEvent>,
+        attempts: BTreeMap<(String, Option<String>), u32>,
+        ts: i64,
+        next_id: i32,
+        custom_status: Option<String>,
+        trace: String,
+    }
+
+    impl Sim {
+        fn new(program: Program, external_events: Vec<proto::HistoryEvent>) -> Self {
+            Self {
+                program,
+                history: Vec::new(),
+                available: external_events,
+                attempts: BTreeMap::new(),
+                ts: 1_700_000_000,
+                next_id: 1000,
+                custom_status: None,
+                trace: String::new(),
+            }
+        }
+
+        fn orchestrator(&self) -> OrchestratorFn {
+            let program = self.program;
+            Arc::new(move |ctx| program(ctx))
+        }
+
+        fn uid(&mut self) -> i32 {
+            self.next_id += 1;
+            self.next_id
+        }
+
+        /// Execute one turn, check the replay invariants and apply the
+        /// response like the runtime would. Returns the completion, if any.
+        async fn turn(
+            &mut self,
+            mut new_events: Vec<proto::HistoryEvent>,
+            duplicate_scheduling: bool,
+        ) -> Option<proto::CompleteWorkflowAction> {
+            self.ts += 1;
+            new_events.insert(
+                0,
+                event(
+                    -1,
+                    EventType::WorkflowStarted(proto::WorkflowStartedEvent { version: None }),
+                    self.ts,
+                ),
+            );
+            self.trace += &format!("turn: {new_events:?}\n");
+            let resp = execute(
+                &self.orchestrator(),
+                self.history.clone(),
+                new_events.clone(),
+            )
+            .await;
+            if let Some(cs) = &resp.custom_status {
+                self.custom_status = Some(cs.clone());
+            }
+
+            // Invariant: no non-determinism, unique action IDs, and nothing
+            // already recorded in history is emitted again.
+            let scheduled: HashSet<i32> = self
+                .history
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.event_type,
+                        Some(
+                            EventType::TaskScheduled(_)
+                                | EventType::TimerCreated(_)
+                                | EventType::ChildWorkflowInstanceCreated(_)
+                        )
+                    )
+                })
+                .map(|e| e.event_id)
+                .collect();
+            let mut ids = HashSet::new();
+            for a in &resp.actions {
+                assert!(
+                    ids.insert(a.id),
+                    "duplicate action id {}\n{}",
+                    a.id,
+                    self.trace
+                );
+                if !matches!(
+                    a.workflow_action_type,
+                    Some(WorkflowActionType::CompleteWorkflow(_))
+                ) {
+                    assert!(
+                        !scheduled.contains(&a.id),
+                        "re-emitted action {} already in history\n{}",
+                        a.id,
+                        self.trace
+                    );
+                }
+            }
+            let completion = resp
+                .actions
+                .iter()
+                .find_map(|a| match &a.workflow_action_type {
+                    Some(WorkflowActionType::CompleteWorkflow(c)) => Some(c.clone()),
+                    _ => None,
+                });
+            if let Some(c) = &completion {
+                let failure = c.failure_details.as_ref().map(|f| f.error_type.as_str());
+                assert_ne!(
+                    failure,
+                    Some("NonDeterminismError"),
+                    "replay reported non-determinism: {:?}\n{}",
+                    c.failure_details,
+                    self.trace
+                );
+            }
+
+            self.history.extend(new_events);
+            let mut recorded = Vec::new();
+            for a in resp.actions {
+                let et = match a.workflow_action_type {
+                    Some(WorkflowActionType::ScheduleTask(t)) => {
+                        let attempt = self
+                            .attempts
+                            .entry((t.name.clone(), t.input.clone()))
+                            .or_default();
+                        let outcome = activity_result(&t.name, t.input.as_deref(), *attempt);
+                        *attempt += 1;
+                        let id = self.uid();
+                        self.available.push(event(
+                            id,
+                            match outcome {
+                                Ok(result) => EventType::TaskCompleted(proto::TaskCompletedEvent {
+                                    task_scheduled_id: a.id,
+                                    result,
+                                    task_execution_id: t.task_execution_id.clone(),
+                                    ..Default::default()
+                                }),
+                                Err(message) => EventType::TaskFailed(proto::TaskFailedEvent {
+                                    task_scheduled_id: a.id,
+                                    failure_details: Some(proto::TaskFailureDetails {
+                                        error_type: "ActivityError".into(),
+                                        error_message: message,
+                                        ..Default::default()
+                                    }),
+                                    task_execution_id: t.task_execution_id.clone(),
+                                    ..Default::default()
+                                }),
+                            },
+                            0,
+                        ));
+                        EventType::TaskScheduled(proto::TaskScheduledEvent {
+                            name: t.name,
+                            input: t.input,
+                            task_execution_id: t.task_execution_id,
+                            ..Default::default()
+                        })
+                    }
+                    Some(WorkflowActionType::CreateTimer(t)) => {
+                        let indefinite = t
+                            .fire_at
+                            .as_ref()
+                            .is_some_and(|f| f.seconds > 200_000_000_000);
+                        if !indefinite {
+                            let id = self.uid();
+                            self.available.push(event(
+                                id,
+                                EventType::TimerFired(proto::TimerFiredEvent {
+                                    fire_at: t.fire_at,
+                                    timer_id: a.id,
+                                }),
+                                0,
+                            ));
+                        }
+                        EventType::TimerCreated(proto::TimerCreatedEvent {
+                            fire_at: t.fire_at,
+                            name: t.name,
+                            origin: t.origin.map(|o| match o {
+                                proto::create_timer_action::Origin::CreateTimer(x) => {
+                                    proto::timer_created_event::Origin::CreateTimer(x)
+                                }
+                                proto::create_timer_action::Origin::ExternalEvent(x) => {
+                                    proto::timer_created_event::Origin::ExternalEvent(x)
+                                }
+                                proto::create_timer_action::Origin::ActivityRetry(x) => {
+                                    proto::timer_created_event::Origin::ActivityRetry(x)
+                                }
+                                proto::create_timer_action::Origin::ChildWorkflowRetry(x) => {
+                                    proto::timer_created_event::Origin::ChildWorkflowRetry(x)
+                                }
+                            }),
+                            ..Default::default()
+                        })
+                    }
+                    Some(WorkflowActionType::CreateChildWorkflow(c)) => {
+                        let n = c
+                            .input
+                            .as_deref()
+                            .and_then(|i| serde_json::from_str::<i64>(i).ok())
+                            .unwrap_or(0);
+                        let id = self.uid();
+                        self.available.push(event(
+                            id,
+                            EventType::ChildWorkflowInstanceCompleted(
+                                proto::ChildWorkflowInstanceCompletedEvent {
+                                    task_scheduled_id: a.id,
+                                    result: json(n + 1),
+                                    ..Default::default()
+                                },
+                            ),
+                            0,
+                        ));
+                        EventType::ChildWorkflowInstanceCreated(
+                            proto::ChildWorkflowInstanceCreatedEvent {
+                                name: c.name,
+                                input: c.input,
+                                instance_id: c.instance_id,
+                                ..Default::default()
+                            },
+                        )
+                    }
+                    _ => continue,
+                };
+                recorded.push(event(a.id, et, self.ts));
+            }
+            if duplicate_scheduling {
+                let dup = recorded.clone();
+                recorded.extend(dup);
+            }
+            self.history.extend(recorded);
+            completion
+        }
+
+        /// Remove and return up to `n` available events in ranked order.
+        fn take(&mut self, n: usize, seed: u64) -> Vec<proto::HistoryEvent> {
+            let rank = |e: &proto::HistoryEvent| {
+                let id = identity(e);
+                let mut h = seed ^ 0xA076_1D64_78BD_642F;
+                for b in format!("{id:?}").bytes() {
+                    h = (h ^ b as u64).wrapping_mul(0x1000_0000_01B3);
+                }
+                h
+            };
+            self.available.sort_by_key(rank);
+            let n = n.min(self.available.len());
+            self.available.drain(..n).collect()
+        }
+    }
+
+    async fn execute(
+        orch_fn: &OrchestratorFn,
+        old: Vec<proto::HistoryEvent>,
+        new: Vec<proto::HistoryEvent>,
+    ) -> proto::WorkflowResponse {
+        OrchestrationExecutor::execute(
+            orch_fn,
+            "prop-instance",
+            old,
+            new,
+            String::new(),
+            &WorkerOptions::default(),
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn external_events(ts: i64) -> Vec<proto::HistoryEvent> {
+        ["go", "ev", "ev"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                event(
+                    -1,
+                    EventType::EventRaised(proto::EventRaisedEvent {
+                        name: name.to_string(),
+                        input: json(i as i64 + 1),
+                    }),
+                    ts,
+                )
+            })
+            .collect()
+    }
+
+    /// Run a program to completion with seeded delivery, applying `variant`.
+    /// Returns the outcome and the number of turns.
+    async fn run(program: Program, seed: u64, variant: Variant) -> (Outcome, usize, String) {
+        let mut sim = Sim::new(program, external_events(0));
+        let mut rng = Rng::new(seed);
+        let start = vec![event(
+            -1,
+            EventType::ExecutionStarted(proto::ExecutionStartedEvent {
+                name: "prop".into(),
+                ..Default::default()
+            }),
+            0,
+        )];
+        let mut completion = sim.turn(start, false).await;
+        let mut turn = 1;
+        while completion.is_none() {
+            assert!(turn < 200, "workflow did not finish\n{}", sim.trace);
+            if sim.available.is_empty() {
+                panic!("workflow stuck with nothing to deliver\n{}", sim.trace);
+            }
+            let batch = 1 + rng.below(3);
+            let order_seed = rng.next();
+            let events = sim.take(batch, order_seed);
+            completion = match variant {
+                Variant::Suspend {
+                    turn: t,
+                    resume_next_turn,
+                } if t == turn => {
+                    let mut held = vec![super::make_suspended()];
+                    held.extend(events);
+                    if resume_next_turn {
+                        let c = sim.turn(held, false).await;
+                        assert!(c.is_none(), "suspended turn completed\n{}", sim.trace);
+                        sim.turn(vec![super::make_resumed()], false).await
+                    } else {
+                        held.push(super::make_resumed());
+                        sim.turn(held, false).await
+                    }
+                }
+                Variant::Split { turn: t } if t == turn && events.len() > 1 => {
+                    let mut events = events;
+                    let rest = events.split_off(1);
+                    match sim.turn(events, false).await {
+                        Some(c) => Some(c),
+                        None => sim.turn(rest, false).await,
+                    }
+                }
+                Variant::DuplicateCompletion { turn: t } if t == turn => {
+                    // Raising an event twice is two events, not a duplicate.
+                    let mut events = events;
+                    let completions: Vec<_> = events
+                        .iter()
+                        .filter(|e| !matches!(e.event_type, Some(EventType::EventRaised(_))))
+                        .cloned()
+                        .collect();
+                    if !completions.is_empty() {
+                        // A separate generator keeps the delivery order identical
+                        // to the baseline run.
+                        let pick = Rng::new(seed ^ 0xD0B1).below(completions.len());
+                        events.push(completions[pick].clone());
+                    }
+                    sim.turn(events, false).await
+                }
+                Variant::DuplicateScheduling { turn: t } if t == turn => {
+                    sim.turn(events, true).await
+                }
+                Variant::Terminate { turn: t } if t == turn => {
+                    let mut events = events;
+                    events.push(super::make_terminated(json("stopped")));
+                    sim.turn(events, false).await
+                }
+                _ => sim.turn(events, false).await,
+            };
+            turn += 1;
+        }
+
+        // Replay stability: re-executing the complete history reproduces
+        // the completion and schedules nothing new.
+        let resp = execute(&sim.orchestrator(), sim.history.clone(), vec![]).await;
+        let completion = completion.unwrap();
+        let non_completion: Vec<_> = resp
+            .actions
+            .iter()
+            .filter(|a| {
+                !matches!(
+                    a.workflow_action_type,
+                    Some(WorkflowActionType::CompleteWorkflow(_))
+                )
+            })
+            .collect();
+        let terminated =
+            completion.workflow_status == proto::OrchestrationStatus::Terminated as i32;
+        if !terminated {
+            assert!(
+                non_completion.is_empty(),
+                "replay scheduled {non_completion:?}\n{}",
+                sim.trace
+            );
+            let replayed = resp
+                .actions
+                .iter()
+                .find_map(|a| match &a.workflow_action_type {
+                    Some(WorkflowActionType::CompleteWorkflow(c)) => Some(c.clone()),
+                    _ => None,
+                });
+            assert_eq!(
+                replayed.map(|c| (c.workflow_status, c.result)),
+                Some((completion.workflow_status, completion.result.clone())),
+                "full replay changed the outcome\n{}",
+                sim.trace
+            );
+        }
+
+        let outcome = Outcome {
+            status: completion.workflow_status,
+            result: completion.result.clone(),
+            failure_type: completion.failure_details.map(|f| f.error_type),
+            custom_status: sim.custom_status.clone(),
+        };
+        (outcome, turn, sim.trace)
+    }
+
+    /// Run every program over every seed and compare each variant's outcome
+    /// with the baseline.
+    async fn check_variant(make: impl Fn(usize, u64) -> Variant) {
+        for (name, program) in programs() {
+            for seed in 0..SEEDS {
+                let (baseline, turns, _) = run(program, seed, Variant::Baseline).await;
+                assert_ne!(
+                    baseline.failure_type.as_deref(),
+                    Some("NonDeterminismError"),
+                    "{name} seed {seed}"
+                );
+                let variant = make(turns, seed);
+                let (outcome, _, trace) = run(program, seed, variant).await;
+                assert_eq!(
+                    outcome, baseline,
+                    "{name} seed {seed}: {variant:?} changed the outcome\n{trace}"
+                );
+            }
+        }
+    }
+
+    fn pick_turn(turns: usize, seed: u64) -> usize {
+        1 + (seed as usize % turns.max(2).saturating_sub(1).max(1))
+    }
+
+    #[tokio::test]
+    async fn every_turn_replays_deterministically() {
+        // `run` asserts the per-turn invariants and full-replay stability.
+        for (name, program) in programs() {
+            for seed in 0..SEEDS {
+                let (outcome, _, trace) = run(program, seed, Variant::Baseline).await;
+                assert!(
+                    outcome.status == proto::OrchestrationStatus::Completed as i32
+                        || outcome.status == proto::OrchestrationStatus::ContinuedAsNew as i32,
+                    "{name} seed {seed}: {outcome:?}\n{trace}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn suspension_is_transparent() {
+        check_variant(|turns, seed| Variant::Suspend {
+            turn: pick_turn(turns, seed),
+            resume_next_turn: false,
+        })
+        .await;
+        check_variant(|turns, seed| Variant::Suspend {
+            turn: pick_turn(turns, seed),
+            resume_next_turn: true,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn batching_does_not_change_the_outcome() {
+        check_variant(|turns, seed| Variant::Split {
+            turn: pick_turn(turns, seed),
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_completions_are_ignored() {
+        check_variant(|turns, seed| Variant::DuplicateCompletion {
+            turn: pick_turn(turns, seed),
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_scheduling_events_are_ignored() {
+        check_variant(|turns, seed| Variant::DuplicateScheduling {
+            turn: pick_turn(turns, seed) - 1,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn terminate_stops_unless_already_completed() {
+        for (name, program) in programs() {
+            for seed in 0..SEEDS {
+                let (baseline, turns, _) = run(program, seed, Variant::Baseline).await;
+                let turn = pick_turn(turns, seed);
+                let (outcome, _, trace) = run(program, seed, Variant::Terminate { turn }).await;
+                let terminated = Outcome {
+                    status: proto::OrchestrationStatus::Terminated as i32,
+                    result: json("stopped"),
+                    failure_type: None,
+                    custom_status: outcome.custom_status.clone(),
+                };
+                // The terminate lands in the turn the baseline completed in
+                // (completion wins) or earlier (terminated).
+                assert!(
+                    outcome == terminated || (turn == turns - 1 && outcome == baseline),
+                    "{name} seed {seed} turn {turn}/{turns}: {outcome:?}\n{trace}"
+                );
+            }
+        }
+    }
+}

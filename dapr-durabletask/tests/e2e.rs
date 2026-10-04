@@ -10559,3 +10559,524 @@ mod backend {
         guard.stop().await;
     }
 }
+
+/// End-to-end scenarios that combine features against a real sidecar:
+/// suspension around racing timers and events, worker restarts with a warm
+/// history cache, long multi-turn workflows on stateful history, many
+/// concurrent instances under a tiny cache, and large fan-outs.
+mod scenarios {
+    use std::time::Duration;
+
+    use dapr_durabletask::api::{ExternalEventResult, OrchestrationStatus};
+    use dapr_durabletask::client::TaskHubGrpcClient;
+    use dapr_durabletask::task::{ActivityContext, when_all};
+    use dapr_durabletask::worker::{TaskHubGrpcWorker, WorkerOptions};
+
+    use crate::harness::{self, WorkerGuard};
+    use crate::setup;
+
+    const WAIT: Duration = Duration::from_secs(60);
+
+    fn register(worker: &mut TaskHubGrpcWorker) {
+        worker.registry_mut().add_named_activity(
+            "double",
+            |_ctx: ActivityContext, input: Option<String>| async move {
+                let n: i64 = serde_json::from_str(input.as_deref().unwrap_or("0")).unwrap();
+                Ok(Some((n * 2).to_string()))
+            },
+        );
+        worker
+            .registry_mut()
+            .add_named_orchestrator("chain", |ctx| async move {
+                let steps: i64 = ctx.input()?;
+                let mut acc = 1i64;
+                for _ in 0..steps {
+                    let r = ctx.call_activity("double", acc).await?;
+                    acc = serde_json::from_str(r.as_deref().unwrap()).unwrap();
+                }
+                Ok(Some(acc.to_string()))
+            });
+        worker
+            .registry_mut()
+            .add_named_orchestrator("fan_out", |ctx| async move {
+                let width: i64 = ctx.input()?;
+                let tasks = (0..width).map(|i| ctx.call_activity("double", i)).collect();
+                let results = when_all(tasks).await?;
+                let sum: i64 = results
+                    .iter()
+                    .map(|r| serde_json::from_str::<i64>(r.as_deref().unwrap()).unwrap())
+                    .sum();
+                Ok(Some(sum.to_string()))
+            });
+        worker
+            .registry_mut()
+            .add_named_orchestrator("sum_events", |ctx| async move {
+                let mut total = 0i64;
+                for _ in 0..3 {
+                    let v = ctx.wait_for_external_event("next").await?;
+                    total += serde_json::from_str::<i64>(v.as_deref().unwrap()).unwrap();
+                    let r = ctx.call_activity("double", total).await?;
+                    total = serde_json::from_str(r.as_deref().unwrap()).unwrap();
+                }
+                Ok(Some(total.to_string()))
+            });
+        worker
+            .registry_mut()
+            .add_named_orchestrator("event_or_timeout", |ctx| async move {
+                match ctx
+                    .wait_for_external_event_with_timeout("ev", Duration::from_secs(2))
+                    .await?
+                {
+                    ExternalEventResult::Received(_) => Ok(Some("\"received\"".into())),
+                    ExternalEventResult::TimedOut => Ok(Some("\"timed out\"".into())),
+                }
+            });
+    }
+
+    fn worker(env: &harness::TestEnv, options: WorkerOptions) -> TaskHubGrpcWorker {
+        let mut worker = TaskHubGrpcWorker::with_options(&env.address, options);
+        register(&mut worker);
+        worker
+    }
+
+    async fn finish(client: &mut TaskHubGrpcClient, id: &str) -> Option<String> {
+        let state = client
+            .wait_for_orchestration_completion(id, true, Some(WAIT))
+            .await
+            .unwrap()
+            .expect("state");
+        assert_eq!(
+            state.runtime_status,
+            OrchestrationStatus::Completed,
+            "{state:?}"
+        );
+        state.serialized_output
+    }
+
+    async fn wait_for_turn(client: &mut TaskHubGrpcClient, id: &str) {
+        client
+            .wait_for_orchestration_start(id, false, Some(WAIT))
+            .await
+            .unwrap();
+        // Let the first turn (which schedules the timer) commit.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    #[tokio::test]
+    async fn timeout_that_fires_while_suspended_still_wins_over_a_later_event() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env, WorkerOptions::default()));
+        let mut client = env.new_client().await;
+
+        let id = client
+            .schedule_new_orchestration("event_or_timeout", None, None, None)
+            .await
+            .unwrap();
+        wait_for_turn(&mut client, &id).await;
+        client.suspend_orchestration(&id, None).await.unwrap();
+        // The 2s timeout fires while suspended; the event arrives after it.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        client
+            .raise_orchestration_event(&id, "ev", Some("1".into()))
+            .await
+            .unwrap();
+        client.resume_orchestration(&id, None).await.unwrap();
+
+        assert_eq!(
+            finish(&mut client, &id).await.as_deref(),
+            Some("\"timed out\"")
+        );
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn event_received_while_suspended_is_delivered_on_resume() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env, WorkerOptions::default()));
+        let mut client = env.new_client().await;
+
+        let id = client
+            .schedule_new_orchestration("event_or_timeout", None, None, None)
+            .await
+            .unwrap();
+        wait_for_turn(&mut client, &id).await;
+        client.suspend_orchestration(&id, None).await.unwrap();
+        client
+            .raise_orchestration_event(&id, "ev", Some("1".into()))
+            .await
+            .unwrap();
+        client.resume_orchestration(&id, None).await.unwrap();
+
+        assert_eq!(
+            finish(&mut client, &id).await.as_deref(),
+            Some("\"received\"")
+        );
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn new_worker_with_cold_cache_continues_a_stateful_workflow() {
+        // Worker A warms its history cache; worker B takes over with an empty
+        // cache and must recover the full history for its delta turns.
+        setup!(env);
+        let mut client = env.new_client().await;
+
+        let first = WorkerGuard::start(worker(&env, WorkerOptions::default()));
+        let id = client
+            .schedule_new_orchestration("sum_events", None, None, None)
+            .await
+            .unwrap();
+        client
+            .raise_orchestration_event(&id, "next", Some("1".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        first.stop().await;
+
+        let second = WorkerGuard::start(worker(&env, WorkerOptions::default()));
+        for v in [2, 3] {
+            client
+                .raise_orchestration_event(&id, "next", Some(v.to_string()))
+                .await
+                .unwrap();
+        }
+        // ((1*2 + 2)*2 + 3)*2 = 22
+        assert_eq!(finish(&mut client, &id).await.as_deref(), Some("22"));
+        second.stop().await;
+    }
+
+    #[tokio::test]
+    async fn long_chain_is_identical_with_and_without_stateful_history() {
+        setup!(env);
+        let mut client = env.new_client().await;
+        let mut outputs = Vec::new();
+        for options in [
+            WorkerOptions::default(),
+            WorkerOptions::default().with_stateful_history_disabled(),
+        ] {
+            let guard = WorkerGuard::start(worker(&env, options));
+            let id = client
+                .schedule_new_orchestration("chain", Some("30".into()), None, None)
+                .await
+                .unwrap();
+            outputs.push(finish(&mut client, &id).await);
+            guard.stop().await;
+        }
+        assert_eq!(
+            outputs[0].as_deref(),
+            Some((1i64 << 30).to_string().as_str())
+        );
+        assert_eq!(outputs[0], outputs[1]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_instances_stay_isolated_under_a_one_entry_cache() {
+        // Every turn evicts another instance's history, forcing recovery.
+        setup!(env);
+        let guard = WorkerGuard::start(worker(
+            &env,
+            WorkerOptions::default().with_history_cache_max_instances(1),
+        ));
+        let mut client = env.new_client().await;
+
+        let mut ids = Vec::new();
+        for steps in 1..=12i64 {
+            let id = client
+                .schedule_new_orchestration("chain", Some(steps.to_string()), None, None)
+                .await
+                .unwrap();
+            ids.push((id, steps));
+        }
+        for (id, steps) in ids {
+            let expected = (1i64 << steps).to_string();
+            assert_eq!(
+                finish(&mut client, &id).await.as_deref(),
+                Some(expected.as_str())
+            );
+        }
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn large_fan_out_completes_on_stateful_history() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env, WorkerOptions::default()));
+        let mut client = env.new_client().await;
+
+        let id = client
+            .schedule_new_orchestration("fan_out", Some("300".into()), None, None)
+            .await
+            .unwrap();
+        // sum of 2*i for i in 0..300
+        assert_eq!(finish(&mut client, &id).await.as_deref(), Some("89700"));
+        guard.stop().await;
+    }
+}
+
+/// Every client call through its options-taking variant, asserting the
+/// effect each option has on the sidecar.
+mod client_options {
+    use std::time::Duration;
+
+    use dapr_durabletask::api::{OrchestrationStatus, PurgeInstanceFilter};
+    use dapr_durabletask::client::{
+        FetchOptions, PurgeOptions, RaiseEventOptions, RerunOptions, ResumeOptions, SuspendOptions,
+        TaskHubGrpcClient, TerminateOptions,
+    };
+    use dapr_durabletask::task::ActivityContext;
+    use dapr_durabletask::worker::TaskHubGrpcWorker;
+
+    use crate::harness::{self, WorkerGuard};
+    use crate::setup;
+
+    const WAIT: Duration = Duration::from_secs(30);
+
+    fn worker(env: &harness::TestEnv) -> TaskHubGrpcWorker {
+        let mut worker = env.new_worker();
+        worker.registry_mut().add_named_activity(
+            "double",
+            |_ctx: ActivityContext, input: Option<String>| async move {
+                let n: i64 = serde_json::from_str(input.as_deref().unwrap_or("0")).unwrap();
+                Ok(Some((n * 2).to_string()))
+            },
+        );
+        worker
+            .registry_mut()
+            .add_named_orchestrator("double_input", |ctx| async move {
+                let n: i64 = ctx.input()?;
+                ctx.call_activity("double", n).await
+            });
+        worker
+            .registry_mut()
+            .add_named_orchestrator("echo_event", |ctx| async move {
+                ctx.wait_for_external_event("go").await
+            });
+        worker
+    }
+
+    async fn completed(client: &mut TaskHubGrpcClient, id: &str) -> Option<String> {
+        let state = client
+            .wait_for_orchestration_completion_with_options(id, FetchOptions::new(), Some(WAIT))
+            .await
+            .unwrap()
+            .expect("state");
+        assert_eq!(
+            state.runtime_status,
+            OrchestrationStatus::Completed,
+            "{state:?}"
+        );
+        state.serialized_output
+    }
+
+    async fn status(client: &mut TaskHubGrpcClient, id: &str) -> OrchestrationStatus {
+        client
+            .get_orchestration_state_with_options(id, FetchOptions::new())
+            .await
+            .unwrap()
+            .expect("state")
+            .runtime_status
+    }
+
+    async fn eventually(client: &mut TaskHubGrpcClient, id: &str, want: OrchestrationStatus) {
+        for _ in 0..100 {
+            if status(client, id).await == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("{id} never reached {want:?}");
+    }
+
+    #[tokio::test]
+    async fn fetch_payloads_option_controls_inputs_and_outputs() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let mut client = env.new_client().await;
+        let id = client
+            .schedule_new_orchestration("double_input", Some("21".into()), None, None)
+            .await
+            .unwrap();
+        let started = client
+            .wait_for_orchestration_start_with_options(&id, FetchOptions::new(), Some(WAIT))
+            .await
+            .unwrap()
+            .expect("started");
+        assert_eq!(started.serialized_input.as_deref(), Some("21"));
+        assert_eq!(completed(&mut client, &id).await.as_deref(), Some("42"));
+
+        let without = client
+            .get_orchestration_state_with_options(
+                &id,
+                FetchOptions::new().with_fetch_payloads(false),
+            )
+            .await
+            .unwrap()
+            .expect("state");
+        assert_eq!(without.runtime_status, OrchestrationStatus::Completed);
+        assert!(
+            without
+                .serialized_input
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        assert!(
+            without
+                .serialized_output
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn raise_suspend_resume_options_reach_the_workflow() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let mut client = env.new_client().await;
+        let id = client
+            .schedule_new_orchestration("echo_event", None, None, None)
+            .await
+            .unwrap();
+        eventually(&mut client, &id, OrchestrationStatus::Running).await;
+
+        client
+            .suspend_orchestration_with_options(&id, SuspendOptions::new().with_reason("hold"))
+            .await
+            .unwrap();
+        eventually(&mut client, &id, OrchestrationStatus::Suspended).await;
+        client
+            .raise_orchestration_event_with_options(
+                &id,
+                "go",
+                RaiseEventOptions::new().with_data("\"payload\""),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            status(&mut client, &id).await,
+            OrchestrationStatus::Suspended
+        );
+
+        client
+            .resume_orchestration_with_options(&id, ResumeOptions::new().with_reason("go on"))
+            .await
+            .unwrap();
+        assert_eq!(
+            completed(&mut client, &id).await.as_deref(),
+            Some("\"payload\"")
+        );
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn terminate_option_sets_the_output() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let mut client = env.new_client().await;
+        let id = client
+            .schedule_new_orchestration("echo_event", None, None, None)
+            .await
+            .unwrap();
+        eventually(&mut client, &id, OrchestrationStatus::Running).await;
+        client
+            .terminate_orchestration_with_options(
+                &id,
+                TerminateOptions::new()
+                    .with_output("\"stopped\"")
+                    .with_recursive(true),
+            )
+            .await
+            .unwrap();
+        let state = client
+            .wait_for_orchestration_completion(&id, true, Some(WAIT))
+            .await
+            .unwrap()
+            .expect("state");
+        assert_eq!(state.runtime_status, OrchestrationStatus::Terminated);
+        assert_eq!(state.serialized_output.as_deref(), Some("\"stopped\""));
+        guard.stop().await;
+    }
+
+    // The standalone sidecar implements neither multi-instance purge nor
+    // rerun, so these check that each call reaches it and its refusal comes
+    // back as an error; the requests themselves are checked by the unit
+    // tests in `src/client/options.rs`.
+    #[tokio::test]
+    async fn purge_by_filter_reaches_the_sidecar() {
+        setup!(env);
+        let mut client = env.new_client().await;
+        let filter =
+            PurgeInstanceFilter::new().with_runtime_status([OrchestrationStatus::Completed]);
+        for result in [
+            client
+                .purge_orchestrations_by_filter_with_options(filter.clone(), PurgeOptions::new())
+                .await,
+            client.purge_orchestrations_by_filter(filter, false).await,
+        ] {
+            let err = result.expect_err("the standalone sidecar rejects filter purges");
+            assert!(
+                err.to_string()
+                    .contains("multi-instance purge is not implemented"),
+                "{err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rerun_from_event_reaches_the_sidecar() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let mut client = env.new_client().await;
+        let source = client
+            .schedule_new_orchestration("double_input", Some("5".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(completed(&mut client, &source).await.as_deref(), Some("10"));
+
+        let err = client
+            .rerun_orchestration_from_event(
+                &source,
+                0,
+                RerunOptions::new().with_new_instance_id(format!("{source}-rerun")),
+            )
+            .await
+            .expect_err("the standalone sidecar does not implement rerun");
+        assert!(
+            err.to_string().to_lowercase().contains("not implemented"),
+            "{err}"
+        );
+
+        // Identifiers are validated before anything is sent.
+        let err = client
+            .rerun_orchestration_from_event("", 0, RerunOptions::new())
+            .await
+            .expect_err("empty source instance ID");
+        assert!(
+            !err.to_string().to_lowercase().contains("not implemented"),
+            "{err}"
+        );
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn client_built_from_a_channel_works_and_closes() {
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let channel = tonic::transport::Channel::from_shared(env.address.clone())
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client = TaskHubGrpcClient::from_channel(channel);
+        let id = client
+            .schedule_new_orchestration("double_input", Some("2".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(completed(&mut client, &id).await.as_deref(), Some("4"));
+        client.close();
+        guard.stop().await;
+    }
+}

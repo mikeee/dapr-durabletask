@@ -248,6 +248,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stateful_history_and_cache_builders() {
+        let cache = HistoryCacheOptions {
+            ttl: Some(Duration::from_secs(9)),
+            max_instances: Some(3),
+            ..Default::default()
+        };
+        let opts = WorkerOptions::new()
+            .with_stateful_history(false)
+            .with_history_cache(cache.clone());
+        assert!(!opts.stateful_history);
+        assert_eq!(opts.history_cache, cache);
+        assert_eq!(opts.history_cache.effective_ttl(), Duration::from_secs(9));
+        assert_eq!(opts.history_cache.effective_max_instances(), 3);
+        // Unset limits keep their defaults.
+        assert_eq!(
+            opts.history_cache.effective_sweep_interval(),
+            DEFAULT_HISTORY_CACHE_SWEEP_INTERVAL
+        );
+        assert!(
+            WorkerOptions::new()
+                .with_stateful_history(true)
+                .stateful_history
+        );
+    }
+
+    #[test]
     fn stateful_history_options() {
         let opts = WorkerOptions::default();
         assert!(opts.stateful_history);

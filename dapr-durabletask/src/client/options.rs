@@ -706,6 +706,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rerun_request_carries_every_option() {
+        let req = RerunOptions::new()
+            .with_new_instance_id("new")
+            .with_input(Some("\"in\"".into()))
+            .with_new_child_workflow_instance_id("child")
+            .with_app_id("app2")
+            .to_request("source", 7);
+        assert_eq!(req.source_instance_id, "source");
+        assert_eq!(req.event_id, 7);
+        assert_eq!(req.new_instance_id.as_deref(), Some("new"));
+        assert!(req.overwrite_input);
+        assert_eq!(req.input.as_deref(), Some("\"in\""));
+        assert_eq!(req.new_child_workflow_instance_id.as_deref(), Some("child"));
+        assert_eq!(
+            req.router.and_then(|r| r.target_app_id).as_deref(),
+            Some("app2")
+        );
+
+        // Without options the source input is kept and the sidecar picks IDs.
+        let req = RerunOptions::new().to_request("source", 0);
+        assert!(!req.overwrite_input);
+        assert!(req.input.is_none() && req.new_instance_id.is_none() && req.router.is_none());
+
+        // `with_input(None)` clears the input.
+        let req = RerunOptions::new().with_input(None).to_request("source", 0);
+        assert!(req.overwrite_input && req.input.is_none());
+    }
+
+    #[test]
+    fn purge_by_filter_request_carries_filter_and_options() {
+        let filter = crate::api::PurgeInstanceFilter::new()
+            .with_runtime_status([crate::api::OrchestrationStatus::Completed]);
+        let req = PurgeOptions::new()
+            .with_recursive(true)
+            .with_force(true)
+            .with_app_id("app2")
+            .to_request(
+                proto::purge_instances_request::Request::PurgeInstanceFilter(filter.into_proto()),
+            );
+        assert!(req.recursive);
+        assert_eq!(req.force, Some(true));
+        assert_eq!(
+            req.router.and_then(|r| r.target_app_id).as_deref(),
+            Some("app2")
+        );
+        match req.request {
+            Some(proto::purge_instances_request::Request::PurgeInstanceFilter(f)) => {
+                assert_eq!(
+                    f.runtime_status,
+                    vec![proto::OrchestrationStatus::Completed as i32]
+                );
+            }
+            other => panic!("expected a filter, got {other:?}"),
+        }
+        let req = PurgeOptions::new().to_request(
+            proto::purge_instances_request::Request::InstanceId("i".into()),
+        );
+        assert!(!req.recursive && req.force.is_none() && req.router.is_none());
+    }
+
+    #[test]
     fn tls_config_defaults() {
         let tls = TlsConfig::new();
         assert!(tls.ca_cert_pem.is_none());
