@@ -27,6 +27,8 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
+
 use crate::proto;
 use crate::proto::history_event::EventType as HistoryEventType;
 use crate::proto::prost::Message as _;
@@ -456,15 +458,49 @@ impl PropagatedHistoryChunk {
     /// separate entries. Returns an empty `Vec` when nothing matches.
     /// Mirrors durabletask-go's `WorkflowResult.GetActivitiesByName`.
     pub fn activities_by_name(&self, name: &str) -> Vec<ActivityResult> {
-        self.events
-            .iter()
-            .filter_map(|e| match &e.event_type {
-                Some(HistoryEventType::TaskScheduled(ts)) if ts.name == name => {
-                    Some(self.resolve_activity(e.event_id, ts))
+        let mut results = Vec::new();
+        let mut by_id: HashMap<i32, Vec<usize>> = HashMap::new();
+        for e in &self.events {
+            if let Some(HistoryEventType::TaskScheduled(ts)) = &e.event_type
+                && ts.name == name
+            {
+                by_id.entry(e.event_id).or_default().push(results.len());
+                results.push(ActivityResult {
+                    name: ts.name.clone(),
+                    scheduled_event_id: e.event_id,
+                    task_execution_id: ts.task_execution_id.clone(),
+                    started: true,
+                    completed: false,
+                    failed: false,
+                    input: ts.input.clone(),
+                    output: None,
+                    failure: None,
+                });
+            }
+        }
+        if results.is_empty() {
+            return results;
+        }
+        // Completions may be recorded before their scheduling event, so they
+        // are matched in a second pass.
+        for e in &self.events {
+            match &e.event_type {
+                Some(HistoryEventType::TaskCompleted(tc)) => {
+                    for &i in by_id.get(&tc.task_scheduled_id).into_iter().flatten() {
+                        results[i].completed = true;
+                        results[i].output = tc.result.clone();
+                    }
                 }
-                _ => None,
-            })
-            .collect()
+                Some(HistoryEventType::TaskFailed(tf)) => {
+                    for &i in by_id.get(&tf.task_scheduled_id).into_iter().flatten() {
+                        results[i].failed = true;
+                        results[i].failure = tf.failure_details.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
     }
 
     /// The most recent activity invocation with the given name in this
@@ -478,8 +514,15 @@ impl PropagatedHistoryChunk {
         &self,
         name: &str,
     ) -> Result<ActivityResult, PropagationNotFoundError> {
-        self.activities_by_name(name)
-            .pop()
+        self.events
+            .iter()
+            .rev()
+            .find_map(|e| match &e.event_type {
+                Some(HistoryEventType::TaskScheduled(ts)) if ts.name == name => {
+                    Some(self.resolve_activity(e.event_id, ts))
+                }
+                _ => None,
+            })
             .ok_or_else(|| PropagationNotFoundError {
                 kind: "activity",
                 name: name.to_string(),
@@ -491,15 +534,49 @@ impl PropagatedHistoryChunk {
     /// nothing matches. Mirrors durabletask-go's
     /// `WorkflowResult.GetChildWorkflowsByName`.
     pub fn child_workflows_by_name(&self, name: &str) -> Vec<ChildWorkflowResult> {
-        self.events
-            .iter()
-            .filter_map(|e| match &e.event_type {
-                Some(HistoryEventType::ChildWorkflowInstanceCreated(cw)) if cw.name == name => {
-                    Some(self.resolve_child_workflow(e.event_id, cw))
+        let mut results = Vec::new();
+        let mut by_id: HashMap<i32, Vec<usize>> = HashMap::new();
+        for e in &self.events {
+            if let Some(HistoryEventType::ChildWorkflowInstanceCreated(cw)) = &e.event_type
+                && cw.name == name
+            {
+                by_id.entry(e.event_id).or_default().push(results.len());
+                results.push(ChildWorkflowResult {
+                    name: cw.name.clone(),
+                    instance_id: cw.instance_id.clone(),
+                    scheduled_event_id: e.event_id,
+                    started: true,
+                    completed: false,
+                    failed: false,
+                    input: cw.input.clone(),
+                    output: None,
+                    failure: None,
+                });
+            }
+        }
+        if results.is_empty() {
+            return results;
+        }
+        // Completions may be recorded before their creation event, so they
+        // are matched in a second pass.
+        for e in &self.events {
+            match &e.event_type {
+                Some(HistoryEventType::ChildWorkflowInstanceCompleted(cc)) => {
+                    for &i in by_id.get(&cc.task_scheduled_id).into_iter().flatten() {
+                        results[i].completed = true;
+                        results[i].output = cc.result.clone();
+                    }
                 }
-                _ => None,
-            })
-            .collect()
+                Some(HistoryEventType::ChildWorkflowInstanceFailed(cf)) => {
+                    for &i in by_id.get(&cf.task_scheduled_id).into_iter().flatten() {
+                        results[i].failed = true;
+                        results[i].failure = cf.failure_details.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
     }
 
     /// The most recent child workflow invocation with the given name created
@@ -514,8 +591,15 @@ impl PropagatedHistoryChunk {
         &self,
         name: &str,
     ) -> Result<ChildWorkflowResult, PropagationNotFoundError> {
-        self.child_workflows_by_name(name)
-            .pop()
+        self.events
+            .iter()
+            .rev()
+            .find_map(|e| match &e.event_type {
+                Some(HistoryEventType::ChildWorkflowInstanceCreated(cw)) if cw.name == name => {
+                    Some(self.resolve_child_workflow(e.event_id, cw))
+                }
+                _ => None,
+            })
             .ok_or_else(|| PropagationNotFoundError {
                 kind: "child workflow",
                 name: name.to_string(),
@@ -1070,6 +1154,76 @@ mod tests {
                 Some("card declined")
             );
             assert_eq!(act.scheduled_event_id, 2);
+        }
+
+        #[test]
+        fn test_activity_lookups_match_completions_in_any_order() {
+            // A completion recorded before its scheduling event (early
+            // resolution) still resolves, and a large chunk resolves in one
+            // linear pass.
+            let mut events = vec![event(-1, task_completed(0, "e0", "\"early\""))];
+            for i in 0..20_000 {
+                events.push(event(i, task_scheduled("Step", &format!("e{i}"), "{}")));
+            }
+            for i in 1..20_000 {
+                events.push(event(
+                    -1,
+                    task_completed(i, &format!("e{i}"), &i.to_string()),
+                ));
+            }
+            let chunk = crate::api::PropagatedHistoryChunk {
+                app_id: "app".into(),
+                instance_id: "wf".into(),
+                workflow_name: "Wf".into(),
+                start_event_index: 0,
+                event_count: events.len() as i32,
+                events,
+            };
+
+            let start = std::time::Instant::now();
+            let all = chunk.activities_by_name("Step");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "lookup took {:?}",
+                start.elapsed()
+            );
+            assert_eq!(all.len(), 20_000);
+            assert!(all.iter().all(|a| a.completed));
+            assert_eq!(all[0].output.as_deref(), Some("\"early\""));
+            assert_eq!(all[19_999].output.as_deref(), Some("19999"));
+
+            let last = chunk.last_activity_by_name("Step").expect("found");
+            assert_eq!(&last, all.last().unwrap());
+        }
+
+        #[test]
+        fn test_activity_lookups_resolve_duplicated_scheduling_events() {
+            // Releases before #51 re-emitted in-flight actions and older
+            // runtimes persisted the duplicates: each copy gets the result,
+            // matching the singular lookup.
+            let events = vec![
+                event(5, task_scheduled("Step", "e5", "{}")),
+                event(5, task_scheduled("Step", "e5", "{}")),
+                event(-1, task_completed(5, "e5", "\"done\"")),
+            ];
+            let chunk = crate::api::PropagatedHistoryChunk {
+                app_id: "app".into(),
+                instance_id: "wf".into(),
+                workflow_name: "Wf".into(),
+                start_event_index: 0,
+                event_count: events.len() as i32,
+                events,
+            };
+            let all = chunk.activities_by_name("Step");
+            assert_eq!(all.len(), 2);
+            assert!(
+                all.iter()
+                    .all(|a| a.completed && a.output.as_deref() == Some("\"done\""))
+            );
+            assert_eq!(
+                &chunk.last_activity_by_name("Step").unwrap(),
+                all.last().unwrap()
+            );
         }
 
         #[test]

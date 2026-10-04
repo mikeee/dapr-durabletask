@@ -184,7 +184,8 @@ first under **⚠️ Breaking changes** in each release.
 - A terminate recorded after the workflow completed in the same batch
   overrode the completion; continue-as-new could override a terminate.
 - Events received while suspended were applied immediately instead of after
-  resuming.
+  resuming; they are now applied one at a time in their original order, so
+  for example a timeout that fired before its event still times out.
 - Reported patches were sorted, which daprd could reject as a mismatch.
 - A worker cancelled before receiving its first work item did not shut down.
 - Spans created inside activities were not parented to the activity span.

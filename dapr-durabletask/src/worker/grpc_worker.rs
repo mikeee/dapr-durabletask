@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -857,29 +857,77 @@ type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 struct CachedWorkflowHistory {
     events: Vec<proto::HistoryEvent>,
-    last_access: Instant,
+    /// Position in [`HistoryCacheEntries::lru`]: last access time plus a
+    /// sequence number to order equal times.
+    lru_key: (Instant, u64),
     bytes: u64,
 }
 
+/// Cached histories with an index ordered by last access, so eviction and
+/// the TTL sweep do not scan every entry.
 #[derive(Default)]
 struct HistoryCacheEntries {
     entries: HashMap<String, CachedWorkflowHistory>,
+    lru: BTreeMap<(Instant, u64), String>,
+    next_seq: u64,
     total_bytes: u64,
 }
 
 impl HistoryCacheEntries {
+    fn next_key(&mut self, now: Instant) -> (Instant, u64) {
+        self.next_seq += 1;
+        (now, self.next_seq)
+    }
+
+    fn insert(
+        &mut self,
+        instance_id: &str,
+        events: Vec<proto::HistoryEvent>,
+        bytes: u64,
+        now: Instant,
+    ) {
+        self.remove(instance_id);
+        let lru_key = self.next_key(now);
+        self.lru.insert(lru_key, instance_id.to_string());
+        self.entries.insert(
+            instance_id.to_string(),
+            CachedWorkflowHistory {
+                events,
+                lru_key,
+                bytes,
+            },
+        );
+        self.total_bytes += bytes;
+    }
+
+    /// The entry for `instance_id`, marked as most recently used.
+    fn touch(&mut self, instance_id: &str, now: Instant) -> Option<&CachedWorkflowHistory> {
+        let lru_key = self.next_key(now);
+        let entry = self.entries.get_mut(instance_id)?;
+        self.lru.remove(&entry.lru_key);
+        entry.lru_key = lru_key;
+        self.lru.insert(lru_key, instance_id.to_string());
+        Some(entry)
+    }
+
     fn remove(&mut self, instance_id: &str) {
         if let Some(e) = self.entries.remove(instance_id) {
+            self.lru.remove(&e.lru_key);
             self.total_bytes -= e.bytes;
         }
     }
 
     fn lru_except(&self, keep: &str) -> Option<String> {
-        self.entries
+        self.lru.values().find(|id| id.as_str() != keep).cloned()
+    }
+
+    /// Entries last used longer ago than `ttl`.
+    fn expired(&self, now: Instant, ttl: Duration) -> Vec<String> {
+        self.lru
             .iter()
-            .filter(|(id, _)| id.as_str() != keep)
-            .min_by_key(|(_, e)| e.last_access)
-            .map(|(id, _)| id.clone())
+            .take_while(|((accessed, _), _)| now.saturating_duration_since(*accessed) > ttl)
+            .map(|(_, id)| id.clone())
+            .collect()
     }
 }
 
@@ -956,9 +1004,7 @@ impl WorkflowHistoryCache {
     pub(crate) fn get(&self, instance_id: &str) -> Option<Vec<proto::HistoryEvent>> {
         let now = (self.now)();
         let mut state = self.lock();
-        let entry = state.entries.get_mut(instance_id)?;
-        entry.last_access = now;
-        Some(entry.events.clone())
+        state.touch(instance_id, now).map(|e| e.events.clone())
     }
 
     /// Store an instance's committed history, then evict least-recently-used
@@ -972,16 +1018,7 @@ impl WorkflowHistoryCache {
         };
         let now = (self.now)();
         let mut state = self.lock();
-        state.remove(instance_id);
-        state.entries.insert(
-            instance_id.to_string(),
-            CachedWorkflowHistory {
-                events,
-                last_access: now,
-                bytes,
-            },
-        );
-        state.total_bytes += bytes;
+        state.insert(instance_id, events, bytes, now);
 
         // A single entry larger than the budget is kept (soft overage).
         while state.entries.len() > 1 {
@@ -1014,13 +1051,7 @@ impl WorkflowHistoryCache {
         let now = (self.now)();
         let ttl = self.ttl;
         let mut state = self.lock();
-        let expired: Vec<String> = state
-            .entries
-            .iter()
-            .filter(|(_, e)| now.saturating_duration_since(e.last_access) > ttl)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in expired {
+        for id in state.expired(now, ttl) {
             state.remove(&id);
         }
         self.tokens().retain(|id, (_, dispatched)| {
@@ -1851,6 +1882,28 @@ mod tests {
             c.sweep_expired();
             assert!(c.get("idle").is_none());
             assert!(c.get("active").is_some());
+        }
+
+        #[test]
+        fn test_workflow_history_cache_eviction_at_cap_is_not_a_full_scan() {
+            // Inserting past the instance cap evicts via the ordered LRU index;
+            // a full scan per insert would make this quadratic.
+            let c = WorkflowHistoryCache::new(&HistoryCacheOptions {
+                max_instances: Some(20_000),
+                ..Default::default()
+            });
+            let start = std::time::Instant::now();
+            for i in 0..60_000 {
+                c.put(&format!("wf-{i}"), events(1));
+            }
+            assert_eq!(c.len(), 20_000);
+            assert!(c.get("wf-39999").is_none(), "oldest entries are evicted");
+            assert!(c.get("wf-59999").is_some());
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "eviction took {:?}",
+                start.elapsed()
+            );
         }
 
         #[test]

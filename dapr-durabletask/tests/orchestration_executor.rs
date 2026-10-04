@@ -6883,3 +6883,47 @@ mod task_executor {
         assert!(msg.contains("42"), "{msg}");
     }
 }
+
+#[tokio::test]
+async fn test_held_events_apply_in_order_on_resume() {
+    // While suspended, the timeout fires and then the event arrives. On
+    // resume the held events must be applied one at a time, as without the
+    // suspension: the wait times out and the later event stays buffered.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            match ctx
+                .wait_for_external_event_with_timeout("ev", std::time::Duration::from_secs(30))
+                .await?
+            {
+                ExternalEventResult::Received(data) => Ok(data),
+                ExternalEventResult::TimedOut => Ok(Some("\"timed out\"".to_string())),
+            }
+        })
+    });
+    let old = vec![
+        make_workflow_started(ts_now()),
+        make_execution_started("test_orch", None),
+        make_event_timer_created(
+            0,
+            ts_now() + chrono::Duration::seconds(30),
+            "ev",
+            Some("ev"),
+        ),
+    ];
+    let held = vec![
+        make_suspended(),
+        make_timer_fired(10, 0),
+        make_event_raised("ev", Some("\"payload\"".to_string())),
+        make_resumed(),
+    ];
+    let unsuspended = vec![
+        make_timer_fired(10, 0),
+        make_event_raised("ev", Some("\"payload\"".to_string())),
+    ];
+
+    for new in [unsuspended, held] {
+        let resp = run_executor(&orch_fn, old.clone(), new).await.unwrap();
+        let cw = get_complete_action(&resp.actions).unwrap();
+        assert_eq!(cw.result.as_deref(), Some("\"timed out\""));
+    }
+}

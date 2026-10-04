@@ -174,51 +174,93 @@ impl OrchestrationExecutor {
     ) {
         let mut future: Option<OrchestratorFuture> = None;
         let old_len = old_events.len();
-        for (index, event) in old_events.iter().chain(new_events.iter()).enumerate() {
+        'history: for (index, event) in old_events.iter().chain(new_events.iter()).enumerate() {
             let during_replay = index < old_len;
-            let resume = {
-                let mut inner = lock_inner(&ctx.inner);
-                inner.history_index = index + 1;
-                inner.is_replaying.store(during_replay, Ordering::Release);
-                Self::apply_event(&mut inner, event, during_replay, options)
-            };
-            match resume {
-                Ok(Resume::No) => {}
-                Ok(Resume::Start) => {
-                    tracing::debug!(instance_id = %instance_id, "Starting orchestrator function");
-                    // The closure itself may panic before returning a future.
-                    let started = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        (orchestrator_fn)(ctx.clone())
-                    }));
-                    match started {
-                        Ok(f) => {
-                            future = Some(f);
-                            Self::resume(ctx, &mut future, instance_id);
-                        }
-                        Err(panic) => {
-                            future = None;
-                            Self::record_outcome(
-                                ctx,
-                                Err(panic_message(panic.as_ref())),
-                                instance_id,
-                            );
-                        }
-                    }
-                }
-                Ok(Resume::Yes) => Self::resume(ctx, &mut future, instance_id),
-                Err(failure) => {
-                    tracing::error!(
-                        instance_id = %instance_id,
-                        error = %failure.message,
-                        "Orchestration failed while applying history"
-                    );
-                    future = None;
-                    lock_inner(&ctx.inner).fail_replay(failure);
+            if !Self::step(
+                orchestrator_fn,
+                ctx,
+                &mut future,
+                event,
+                index,
+                during_replay,
+                options,
+                instance_id,
+            ) {
+                break;
+            }
+            // Events held while suspended are applied in their original order,
+            // resuming the orchestrator after each, as if they arrived now.
+            loop {
+                let Some(held) = lock_inner(&ctx.inner).resumed_events.pop_front() else {
                     break;
+                };
+                if !Self::step(
+                    orchestrator_fn,
+                    ctx,
+                    &mut future,
+                    &held,
+                    index,
+                    during_replay,
+                    options,
+                    instance_id,
+                ) {
+                    break 'history;
                 }
             }
         }
         drop(future);
+    }
+
+    /// Apply one history event and resume the orchestrator if it may have
+    /// been unblocked. Returns `false` once the history cannot be applied.
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        orchestrator_fn: &OrchestratorFn,
+        ctx: &OrchestrationContext,
+        future: &mut Option<OrchestratorFuture>,
+        event: &proto::HistoryEvent,
+        index: usize,
+        during_replay: bool,
+        options: &WorkerOptions,
+        instance_id: &str,
+    ) -> bool {
+        let resume = {
+            let mut inner = lock_inner(&ctx.inner);
+            inner.history_index = index + 1;
+            inner.is_replaying.store(during_replay, Ordering::Release);
+            Self::apply_event(&mut inner, event, during_replay, options)
+        };
+        match resume {
+            Ok(Resume::No) => {}
+            Ok(Resume::Start) => {
+                tracing::debug!(instance_id = %instance_id, "Starting orchestrator function");
+                // The closure itself may panic before returning a future.
+                let started =
+                    std::panic::catch_unwind(AssertUnwindSafe(|| (orchestrator_fn)(ctx.clone())));
+                match started {
+                    Ok(f) => {
+                        *future = Some(f);
+                        Self::resume(ctx, future, instance_id);
+                    }
+                    Err(panic) => {
+                        *future = None;
+                        Self::record_outcome(ctx, Err(panic_message(panic.as_ref())), instance_id);
+                    }
+                }
+            }
+            Ok(Resume::Yes) => Self::resume(ctx, future, instance_id),
+            Err(failure) => {
+                tracing::error!(
+                    instance_id = %instance_id,
+                    error = %failure.message,
+                    "Orchestration failed while applying history"
+                );
+                *future = None;
+                lock_inner(&ctx.inner).fail_replay(failure);
+                return false;
+            }
+        }
+        true
     }
 
     /// Poll the orchestrator once, recording its completion if it returns.
@@ -479,13 +521,10 @@ impl OrchestrationExecutor {
             EventType::ExecutionResumed(_) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration resumed");
                 inner.is_suspended = false;
-                let mut resume = Resume::Yes;
-                for held in std::mem::take(&mut inner.suspended_events) {
-                    if Self::apply_event(inner, &held, during_replay, options)? == Resume::Start {
-                        resume = Resume::Start;
-                    }
-                }
-                return Ok(resume);
+                // The replay loop applies the held events next, one at a time.
+                let held = std::mem::take(&mut inner.suspended_events);
+                inner.resumed_events.extend(held);
+                return Ok(Resume::No);
             }
             EventType::ExecutionTerminated(e) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration terminated");

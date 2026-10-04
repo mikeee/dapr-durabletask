@@ -157,6 +157,8 @@ pub(crate) struct OrchestrationContextInner {
     pub(crate) is_terminated: bool,
     /// Events received while suspended, processed on resume.
     pub(crate) suspended_events: Vec<proto::HistoryEvent>,
+    /// Held events released by a resume, applied next in order.
+    pub(crate) resumed_events: VecDeque<proto::HistoryEvent>,
     /// Patches recorded in the orchestration history, in the order the
     /// `WorkflowStarted` events carry them.
     pub(crate) history_patches: Vec<String>,
@@ -477,6 +479,7 @@ impl OrchestrationContext {
                 is_suspended: false,
                 is_terminated: false,
                 suspended_events: Vec::new(),
+                resumed_events: VecDeque::new(),
                 history_patches: Vec::new(),
                 applied_patches: HashMap::new(),
                 new_patches: Vec::new(),
