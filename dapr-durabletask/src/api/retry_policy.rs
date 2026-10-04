@@ -21,8 +21,9 @@ pub struct RetryPolicy {
     pub backoff_coefficient: f64,
     /// Upper bound on the computed delay between retries.
     pub max_retry_interval: Option<Duration>,
-    /// Maximum total wall-clock time spent retrying (measured from the first
-    /// failure). Once elapsed, no further retries are scheduled.
+    /// Maximum total time spent retrying, measured in orchestration time from
+    /// when the call is first made. Once exceeded, no further retries are
+    /// scheduled.
     pub retry_timeout: Option<Duration>,
     /// Optional predicate called on each failure to decide whether to retry.
     /// If `None`, all failures are retried (up to `max_number_of_attempts`).

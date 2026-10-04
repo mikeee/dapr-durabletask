@@ -1,5 +1,69 @@
+use std::time::Duration;
+
 use super::reconnect_policy::ReconnectPolicy;
 use crate::internal::DEFAULT_MAX_IDENTIFIER_LENGTH;
+
+/// Default cap on the number of per-instance histories the worker's
+/// stateful-history cache retains on one work-item stream.
+pub const DEFAULT_HISTORY_CACHE_MAX_INSTANCES: usize = 100_000;
+
+/// Default sliding time-to-live of an instance's cached history after its
+/// last turn.
+pub const DEFAULT_HISTORY_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Default interval at which expired history cache entries are reclaimed.
+pub const DEFAULT_HISTORY_CACHE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Tuning for the worker's stateful-history cache (see
+/// [`WorkerOptions::stateful_history`]).
+///
+/// Every field is optional: `None` (or a zero value) selects the default, as in
+/// durabletask-go's `WithWorkflowHistoryCache*` options.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryCacheOptions {
+    /// How long an instance's history is kept after its last turn (a sliding
+    /// window refreshed by every turn). Default: [`DEFAULT_HISTORY_CACHE_TTL`].
+    pub ttl: Option<Duration>,
+    /// How often expired entries are reclaimed.
+    /// Default: [`DEFAULT_HISTORY_CACHE_SWEEP_INTERVAL`].
+    pub sweep_interval: Option<Duration>,
+    /// Maximum number of per-instance histories retained on one stream; the
+    /// least recently used entry is evicted beyond it.
+    /// Default: [`DEFAULT_HISTORY_CACHE_MAX_INSTANCES`].
+    pub max_instances: Option<usize>,
+    /// Budget in bytes (serialized history size) across all cached instances;
+    /// least recently used entries are evicted beyond it. A single entry larger
+    /// than the budget is kept. Default: unlimited.
+    pub max_bytes: Option<u64>,
+}
+
+impl HistoryCacheOptions {
+    /// The effective TTL (the configured value, or the default).
+    pub fn effective_ttl(&self) -> Duration {
+        self.ttl
+            .filter(|d| !d.is_zero())
+            .unwrap_or(DEFAULT_HISTORY_CACHE_TTL)
+    }
+
+    /// The effective sweep interval (the configured value, or the default).
+    pub fn effective_sweep_interval(&self) -> Duration {
+        self.sweep_interval
+            .filter(|d| !d.is_zero())
+            .unwrap_or(DEFAULT_HISTORY_CACHE_SWEEP_INTERVAL)
+    }
+
+    /// The effective instance cap (the configured value, or the default).
+    pub fn effective_max_instances(&self) -> usize {
+        self.max_instances
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_HISTORY_CACHE_MAX_INSTANCES)
+    }
+
+    /// The effective byte budget; `0` means unlimited.
+    pub fn effective_max_bytes(&self) -> u64 {
+        self.max_bytes.unwrap_or(0)
+    }
+}
 
 /// Configuration options for [`TaskHubGrpcWorker`](super::TaskHubGrpcWorker).
 #[derive(Debug, Clone)]
@@ -39,6 +103,18 @@ pub struct WorkerOptions {
     /// is unavailable or drops. The policy governs both the initial connection
     /// attempt and every subsequent reconnect.
     pub reconnect_policy: ReconnectPolicy,
+
+    /// Whether the worker uses the stateful-history optimization (default
+    /// `true`). When enabled the worker advertises
+    /// `WORKER_CAPABILITY_STATEFUL_HISTORY`, keeps each instance's committed
+    /// history between turns on the same work-item stream, and lets the
+    /// sidecar send only the new events (a delta); the full history is
+    /// rebuilt from the cache, or fetched with `GetInstanceHistory` on a cache
+    /// miss. Disable to have the sidecar send the full history every turn.
+    pub stateful_history: bool,
+
+    /// Bounds and TTL of the stateful-history cache.
+    pub history_cache: HistoryCacheOptions,
 }
 
 impl Default for WorkerOptions {
@@ -51,6 +127,8 @@ impl Default for WorkerOptions {
             max_json_payload_size: 64 * 1024 * 1024, // 64 MiB
             max_identifier_length: DEFAULT_MAX_IDENTIFIER_LENGTH,
             reconnect_policy: ReconnectPolicy::default(),
+            stateful_history: true,
+            history_cache: HistoryCacheOptions::default(),
         }
     }
 }
@@ -103,6 +181,53 @@ impl WorkerOptions {
         self
     }
 
+    /// Enable or disable the stateful-history optimization (see
+    /// [`stateful_history`](Self::stateful_history)).
+    pub fn with_stateful_history(mut self, enabled: bool) -> Self {
+        self.stateful_history = enabled;
+        self
+    }
+
+    /// Opt out of the stateful-history optimization: the worker advertises no
+    /// capability, keeps no history cache, and receives the full history on
+    /// every turn (durabletask-go `WithStatefulHistoryDisabled`).
+    pub fn with_stateful_history_disabled(self) -> Self {
+        self.with_stateful_history(false)
+    }
+
+    /// Replace the whole history cache configuration.
+    pub fn with_history_cache(mut self, cache: HistoryCacheOptions) -> Self {
+        self.history_cache = cache;
+        self
+    }
+
+    /// Set the sliding TTL of cached histories. Zero keeps the default.
+    pub fn with_history_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.history_cache.ttl = Some(ttl);
+        self
+    }
+
+    /// Set how often expired cached histories are reclaimed. Zero keeps the
+    /// default.
+    pub fn with_history_cache_sweep_interval(mut self, interval: Duration) -> Self {
+        self.history_cache.sweep_interval = Some(interval);
+        self
+    }
+
+    /// Set the maximum number of cached per-instance histories. Zero keeps the
+    /// default.
+    pub fn with_history_cache_max_instances(mut self, max_instances: usize) -> Self {
+        self.history_cache.max_instances = Some(max_instances);
+        self
+    }
+
+    /// Set the history cache byte budget (serialized size). Zero means
+    /// unlimited.
+    pub fn with_history_cache_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.history_cache.max_bytes = Some(max_bytes);
+        self
+    }
+
     /// Convenience: configure a fast reconnect policy suitable for tests.
     ///
     /// Sets a 50 ms initial delay, 500 ms maximum delay, ×2 multiplier, and
@@ -121,7 +246,54 @@ impl WorkerOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[test]
+    fn stateful_history_options() {
+        let opts = WorkerOptions::default();
+        assert!(opts.stateful_history);
+        assert_eq!(opts.history_cache, HistoryCacheOptions::default());
+        assert_eq!(
+            opts.history_cache.effective_ttl(),
+            DEFAULT_HISTORY_CACHE_TTL
+        );
+        assert_eq!(
+            opts.history_cache.effective_sweep_interval(),
+            DEFAULT_HISTORY_CACHE_SWEEP_INTERVAL
+        );
+        assert_eq!(
+            opts.history_cache.effective_max_instances(),
+            DEFAULT_HISTORY_CACHE_MAX_INSTANCES
+        );
+        assert_eq!(opts.history_cache.effective_max_bytes(), 0);
+
+        let opts = WorkerOptions::new()
+            .with_stateful_history_disabled()
+            .with_history_cache_ttl(Duration::from_secs(5))
+            .with_history_cache_sweep_interval(Duration::from_secs(1))
+            .with_history_cache_max_instances(7)
+            .with_history_cache_max_bytes(1024);
+        assert!(!opts.stateful_history);
+        assert_eq!(opts.history_cache.effective_ttl(), Duration::from_secs(5));
+        assert_eq!(
+            opts.history_cache.effective_sweep_interval(),
+            Duration::from_secs(1)
+        );
+        assert_eq!(opts.history_cache.effective_max_instances(), 7);
+        assert_eq!(opts.history_cache.effective_max_bytes(), 1024);
+
+        // Zero values fall back to the defaults (Go: non-positive keeps default).
+        let opts = WorkerOptions::new()
+            .with_history_cache_ttl(Duration::ZERO)
+            .with_history_cache_max_instances(0);
+        assert_eq!(
+            opts.history_cache.effective_ttl(),
+            DEFAULT_HISTORY_CACHE_TTL
+        );
+        assert_eq!(
+            opts.history_cache.effective_max_instances(),
+            DEFAULT_HISTORY_CACHE_MAX_INSTANCES
+        );
+    }
 
     #[test]
     fn worker_options_defaults() {
