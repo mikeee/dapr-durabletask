@@ -147,6 +147,19 @@ impl OrchestrationExecutor {
         {
             let mut inner = lock_inner(&ctx.inner);
             inner.history_len = old_events.len() + new_events.len();
+            // Every recorded patch is reported back even if the replay stops
+            // before reaching the turn that recorded it.
+            for event in old_events.iter().chain(new_events) {
+                if let Some(EventType::WorkflowStarted(ws)) = &event.event_type
+                    && let Some(version) = &ws.version
+                {
+                    for patch in &version.patches {
+                        if !inner.recorded_patches.contains(patch) {
+                            inner.recorded_patches.push(patch.clone());
+                        }
+                    }
+                }
+            }
             // Stash the propagated history (if any) before running the function so
             // that ctx.propagated_history() is available during user code.
             inner.propagated_history = propagated_history.map(std::sync::Arc::new);
@@ -388,10 +401,15 @@ impl OrchestrationExecutor {
         }
 
         // While suspended, hold events back until resumed or terminated.
+        // WorkflowStarted is applied straight away: the held events run on
+        // the resume turn, so they must see that turn's clock and the patches
+        // recorded on it.
         if inner.is_suspended
             && !matches!(
                 event_type,
-                EventType::ExecutionResumed(_) | EventType::ExecutionTerminated(_)
+                EventType::ExecutionResumed(_)
+                    | EventType::ExecutionTerminated(_)
+                    | EventType::WorkflowStarted(_)
             )
         {
             inner.suspended_events.push(event.clone());

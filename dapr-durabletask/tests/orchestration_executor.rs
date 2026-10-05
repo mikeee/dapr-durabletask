@@ -7679,3 +7679,78 @@ mod replay_properties {
         }
     }
 }
+
+#[tokio::test]
+async fn test_replay_failure_still_reports_every_recorded_patch() {
+    // The runtime only accepts a response whose patches extend those in
+    // history, so a replay that fails before reaching a later turn's
+    // WorkflowStarted must still report that turn's patches.
+    let orch_fn: OrchestratorFn =
+        Arc::new(|ctx| Box::pin(async move { ctx.call_activity("b", ()).await }));
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started_with_patches(ts_now(), vec!["p1".to_string()]),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(0, "a"),
+            make_workflow_started_with_patches(ts_now(), vec!["p2".to_string()]),
+        ],
+        vec![make_workflow_started(ts_now())],
+    )
+    .await
+    .unwrap();
+
+    assert_nondeterminism(&resp);
+    assert_eq!(
+        resp.version.map(|v| v.patches),
+        Some(vec!["p1".to_string(), "p2".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn test_patch_applied_on_resume_turn_replays_the_same() {
+    // An activity completes while suspended. On the resume turn the
+    // orchestrator reaches the patch check at the end of history, applies
+    // it, and the runtime records it on that turn's WorkflowStarted. A later
+    // replay must see the patch before the held completion is applied.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            ctx.call_activity("a", ()).await?;
+            if ctx.is_patched("p") {
+                ctx.call_activity("patched", ()).await
+            } else {
+                ctx.call_activity("unpatched", ()).await
+            }
+        })
+    });
+
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_task_scheduled(0, "a"),
+            make_workflow_started(ts_now()),
+            make_suspended(),
+            make_workflow_started(ts_now()),
+            make_task_completed(10, 0, None),
+            make_workflow_started_with_patches(ts_now(), vec!["p".to_string()]),
+            make_resumed(),
+            make_task_scheduled(1, "patched"),
+        ],
+        vec![
+            make_workflow_started(ts_now()),
+            make_task_completed(11, 1, Some("\"done\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::Completed as i32
+    );
+    assert_eq!(cw.result.as_deref(), Some("\"done\""));
+}

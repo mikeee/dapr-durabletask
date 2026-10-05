@@ -162,6 +162,9 @@ pub(crate) struct OrchestrationContextInner {
     /// Patches recorded in the orchestration history, in the order the
     /// `WorkflowStarted` events carry them.
     pub(crate) history_patches: Vec<String>,
+    /// Every patch recorded anywhere in the history, in order. Reported back
+    /// to the runtime; not visible to `is_patched` until its turn is replayed.
+    pub(crate) recorded_patches: Vec<String>,
     /// Cache of patch decisions made during the current execution.
     pub(crate) applied_patches: HashMap<String, bool>,
     /// Patches first applied by this execution, in encounter order.
@@ -420,9 +423,13 @@ impl OrchestrationContextInner {
     /// runtime stalls the workflow unless the recorded patches are a prefix
     /// of the reported ones.
     pub(crate) fn reported_patches(&self) -> Vec<String> {
-        self.history_patches
+        self.recorded_patches
             .iter()
-            .chain(&self.new_patches)
+            .chain(
+                self.new_patches
+                    .iter()
+                    .filter(|p| !self.recorded_patches.contains(p)),
+            )
             .cloned()
             .collect()
     }
@@ -481,6 +488,7 @@ impl OrchestrationContext {
                 suspended_events: Vec::new(),
                 resumed_events: VecDeque::new(),
                 history_patches: Vec::new(),
+                recorded_patches: Vec::new(),
                 applied_patches: HashMap::new(),
                 new_patches: Vec::new(),
                 history_index: 0,
