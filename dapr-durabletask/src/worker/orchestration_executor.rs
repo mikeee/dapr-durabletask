@@ -731,7 +731,11 @@ impl OrchestrationExecutor {
             "External event raised"
         );
 
-        if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name) {
+        // Once the orchestrator has finished, its abandoned waiters must not
+        // consume events: they are buffered so continue-as-new carries them over.
+        if !inner.is_complete
+            && let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name)
+        {
             while let Some(task) = tasks.pop_front() {
                 if task.is_complete() {
                     continue;

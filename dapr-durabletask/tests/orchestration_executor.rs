@@ -7754,3 +7754,57 @@ async fn test_patch_applied_on_resume_turn_replays_the_same() {
     );
     assert_eq!(cw.result.as_deref(), Some("\"done\""));
 }
+
+#[tokio::test]
+async fn test_event_after_continue_as_new_is_carried_over() {
+    // The activity wins the race and the orchestrator continues as new,
+    // abandoning its event wait. An event arriving later in the same batch
+    // must be carried over to the next execution, not consumed by the
+    // abandoned wait.
+    let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+        Box::pin(async move {
+            let event = ctx.wait_for_external_event("ev");
+            let work = ctx.call_activity("a", ());
+            when_any(vec![work, event]).await?;
+            ctx.continue_as_new("next", true);
+            Ok(None)
+        })
+    });
+
+    let far_future = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+        .unwrap()
+        .and_hms_nano_opt(23, 59, 59, 999_999_999)
+        .unwrap()
+        .and_utc();
+    let resp = run_executor(
+        &orch_fn,
+        vec![
+            make_workflow_started(ts_now()),
+            make_execution_started("test_orch", None),
+            make_event_timer_created(0, far_future, "ev", Some("ev")),
+            make_task_scheduled(1, "a"),
+        ],
+        vec![
+            make_workflow_started(ts_now()),
+            make_task_completed(10, 1, None),
+            make_event_raised("ev", Some("\"payload\"".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let cw = get_complete_action(&resp.actions).unwrap();
+    assert_eq!(
+        cw.workflow_status,
+        proto::OrchestrationStatus::ContinuedAsNew as i32
+    );
+    let carried: Vec<_> = cw
+        .carryover_events
+        .iter()
+        .filter_map(|e| match &e.event_type {
+            Some(EventType::EventRaised(r)) => Some((r.name.as_str(), r.input.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(carried, vec![("ev", Some("\"payload\""))]);
+}
