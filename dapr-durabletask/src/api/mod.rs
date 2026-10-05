@@ -11,7 +11,8 @@ pub use errors::{DurableTaskError, Result};
 pub use external_event::ExternalEventResult;
 pub use failure_details::FailureDetails;
 pub use history_propagation::{
-    HistoryPropagationScope, PropagatedHistory, PropagatedHistoryChunk, PropagationNotFoundError,
+    ActivityResult, ChildWorkflowResult, HistoryPropagationScope, InvalidPropagatedHistoryError,
+    PropagatedHistory, PropagatedHistoryChunk, PropagationNotFoundError,
 };
 pub use orchestration_state::{InstanceNotFound, OrchestrationState};
 pub use orchestration_status::OrchestrationStatus;

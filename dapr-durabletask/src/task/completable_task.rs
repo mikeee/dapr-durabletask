@@ -17,13 +17,17 @@ pub enum TaskResult {
 
 struct CompletableTaskInner {
     result: Option<TaskResult>,
-    waker: Option<Waker>,
+    /// Wakers of every distinct waiter; all are woken on resolution so a
+    /// combinator awaiting the task is not starved by another waiter.
+    wakers: Vec<Waker>,
     /// `true` if the result came from history replay, `false` if from a
     /// newly-arrived event. Stand-alone tasks default to `true` so they
     /// never flip the owning context's replay flag.
     completed_during_replay: bool,
     /// Shared `is_replaying` flag of the owning orchestration context, if any.
     replay_handle: Option<Arc<AtomicBool>>,
+    /// Task execution ID recorded on the resolving event, if any.
+    task_execution_id: Option<String>,
 }
 
 /// A task that can be completed by the orchestration executor.
@@ -41,11 +45,24 @@ impl CompletableTask {
         Self {
             inner: Arc::new(Mutex::new(CompletableTaskInner {
                 result: None,
-                waker: None,
+                wakers: Vec::new(),
                 completed_during_replay: true,
                 replay_handle: None,
+                task_execution_id: None,
             })),
         }
+    }
+
+    /// Record the task execution ID carried by the resolving event.
+    pub(crate) fn set_task_execution_id(&self, id: String) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.task_execution_id = Some(id);
+    }
+
+    /// The task execution ID carried by the resolving event, if any.
+    pub(crate) fn task_execution_id(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.task_execution_id.clone()
     }
 
     /// Attach the owning context's shared `is_replaying` flag. The task
@@ -63,10 +80,17 @@ impl CompletableTask {
     /// Complete the task, tagging whether the value came from history replay
     /// or from a newly-arrived event.
     pub(crate) fn complete_with_phase(&self, result: Option<String>, during_replay: bool) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.result = Some(TaskResult::Completed(result));
-        inner.completed_during_replay = during_replay;
-        if let Some(waker) = inner.waker.take() {
+        self.resolve(TaskResult::Completed(result), during_replay);
+    }
+
+    fn resolve(&self, result: TaskResult, during_replay: bool) {
+        let wakers = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.result = Some(result);
+            inner.completed_during_replay = during_replay;
+            std::mem::take(&mut inner.wakers)
+        };
+        for waker in wakers {
             waker.wake();
         }
     }
@@ -79,12 +103,7 @@ impl CompletableTask {
     /// Fail the task, tagging whether the failure came from history replay
     /// or from a newly-arrived event.
     pub(crate) fn fail_with_phase(&self, details: FailureDetails, during_replay: bool) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.result = Some(TaskResult::Failed(details));
-        inner.completed_during_replay = during_replay;
-        if let Some(waker) = inner.waker.take() {
-            waker.wake();
-        }
+        self.resolve(TaskResult::Failed(details), during_replay);
     }
 
     /// Check if the task is complete (success or failure).
@@ -145,7 +164,9 @@ impl Future for CompletableTask {
                 }))
             }
             None => {
-                inner.waker = Some(cx.waker().clone());
+                if !inner.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                    inner.wakers.push(cx.waker().clone());
+                }
                 Poll::Pending
             }
         }

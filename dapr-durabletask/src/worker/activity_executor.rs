@@ -1,3 +1,5 @@
+use tokio_util::sync::CancellationToken;
+
 use crate::proto;
 use crate::task::ActivityContext;
 
@@ -7,7 +9,7 @@ pub(crate) struct ActivityExecutor;
 
 impl ActivityExecutor {
     /// Execute an activity function and return the proto response.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     pub async fn execute(
         activity_fn: &ActivityFn,
         name: &str,
@@ -19,8 +21,39 @@ impl ActivityExecutor {
         completion_token: String,
         propagated_history: Option<crate::api::PropagatedHistory>,
     ) -> proto::ActivityResponse {
+        Self::execute_with_cancellation(
+            activity_fn,
+            name,
+            instance_id,
+            task_id,
+            task_execution_id,
+            encoded_input,
+            parent_trace_context,
+            completion_token,
+            propagated_history,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    /// Execute an activity function whose [`ActivityContext`] observes
+    /// `cancellation` (fired by the worker on shutdown).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_with_cancellation(
+        activity_fn: &ActivityFn,
+        name: &str,
+        instance_id: &str,
+        task_id: i32,
+        task_execution_id: String,
+        encoded_input: Option<String>,
+        parent_trace_context: Option<&proto::TraceContext>,
+        completion_token: String,
+        propagated_history: Option<crate::api::PropagatedHistory>,
+        cancellation: CancellationToken,
+    ) -> proto::ActivityResponse {
         let ctx = ActivityContext::new(instance_id.to_string(), task_id, task_execution_id)
-            .with_propagated_history(propagated_history);
+            .with_propagated_history(propagated_history)
+            .with_cancellation_token(cancellation);
 
         tracing::info!(
             instance_id = %instance_id,
@@ -39,8 +72,41 @@ impl ActivityExecutor {
         #[cfg(not(feature = "opentelemetry"))]
         let _ = parent_trace_context;
 
-        let response = match (activity_fn)(ctx, encoded_input).await {
-            Ok(result) => {
+        // Run the activity with its span as the current OTel context so spans
+        // created inside it are children of the activity span.
+        let run = async move { (activity_fn)(ctx, encoded_input).await };
+        #[cfg(feature = "opentelemetry")]
+        let run = opentelemetry::trace::FutureExt::with_context(run, otel_ctx.clone());
+        let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await;
+
+        let response = match outcome {
+            // A panicking activity is reported as a failure, like durabletask-go.
+            Err(panic) => {
+                let message = super::orchestration_executor::panic_message(panic.as_ref());
+                tracing::error!(
+                    instance_id = %instance_id,
+                    activity = %name,
+                    task_id = task_id,
+                    error = %message,
+                    "Activity panicked"
+                );
+                #[cfg(feature = "opentelemetry")]
+                crate::internal::otel::set_span_error(&otel_ctx, &message);
+                proto::ActivityResponse {
+                    instance_id: instance_id.to_string(),
+                    task_id,
+                    result: None,
+                    failure_details: Some(proto::TaskFailureDetails {
+                        error_type: "TaskActivityPanic".to_string(),
+                        error_message: message,
+                        stack_trace: None,
+                        inner_failure: None,
+                        is_non_retriable: false,
+                    }),
+                    completion_token,
+                }
+            }
+            Ok(Ok(result)) => {
                 tracing::info!(
                     instance_id = %instance_id,
                     activity = %name,
@@ -55,7 +121,7 @@ impl ActivityExecutor {
                     completion_token,
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(
                     instance_id = %instance_id,
                     activity = %name,

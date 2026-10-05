@@ -59,28 +59,35 @@ pub struct TestEnv {
 }
 
 impl TestEnv {
-    /// Spawn a sidecar on a free port and poll until it's ready (up to 4 s).
-    /// Returns `None` if the sidecar binary is absent.
+    /// Spawn a sidecar on a free port and poll until it's ready (up to 4 s
+    /// per attempt). A sidecar that exits early — e.g. because a concurrently
+    /// started test claimed the same port first — is retried on a fresh port.
+    /// Returns `None` if the sidecar binary is absent or never starts.
     pub async fn start() -> Option<Self> {
         let bin = sidecar_bin()?;
-        let port = free_port();
-        let address = format!("http://127.0.0.1:{port}");
+        for attempt in 1..=3 {
+            let port = free_port();
+            let address = format!("http://127.0.0.1:{port}");
 
-        let mut sidecar = Command::new(&bin)
-            .args(["--port", &port.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("Failed to start sidecar '{bin}': {e}"));
+            let mut sidecar = Command::new(&bin)
+                .args(["--port", &port.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap_or_else(|e| panic!("Failed to start sidecar '{bin}': {e}"));
 
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return Some(Self { address, sidecar });
+            for _ in 0..40 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if matches!(sidecar.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some(Self { address, sidecar });
+                }
             }
+            eprintln!("[harness] Sidecar on port {port} failed to start (attempt {attempt})");
+            kill_and_wait(&mut sidecar);
         }
-        eprintln!("[harness] Sidecar on port {port} failed to start within 4 s");
-        kill_and_wait(&mut sidecar);
         None
     }
 

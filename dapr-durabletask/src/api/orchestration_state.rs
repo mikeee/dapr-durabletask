@@ -7,14 +7,40 @@ use crate::proto;
 /// Snapshot of an orchestration instance's current state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrchestrationState {
+    /// The orchestration instance ID.
     pub instance_id: String,
+    /// The registered name of the orchestrator.
     pub name: String,
+    /// The current runtime status.
     pub runtime_status: OrchestrationStatus,
+    /// When the instance was created (scheduled).
     pub created_at: Option<DateTime<Utc>>,
+    /// When the instance state was last updated.
     pub last_updated_at: Option<DateTime<Utc>>,
+    /// When the orchestrator first began executing, i.e. when the sidecar
+    /// processed the instance's first work item.
+    ///
+    /// `None` while the instance is still pending (for example because it has
+    /// a future start time or no worker has picked it up yet). For an instance
+    /// scheduled with a start time this is never earlier than that start time.
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+    /// The instance ID of the parent orchestration, if this instance was
+    /// started as a sub-orchestration. `None` for top-level instances.
+    #[serde(default)]
+    pub parent_instance_id: Option<String>,
+    /// The app ID of the parent orchestration, if this instance was started as
+    /// a sub-orchestration and the sidecar recorded the parent's app ID.
+    /// `None` for top-level instances.
+    #[serde(default)]
+    pub parent_app_id: Option<String>,
+    /// The JSON-serialized orchestration input, if payloads were fetched.
     pub serialized_input: Option<String>,
+    /// The JSON-serialized orchestration output, if payloads were fetched.
     pub serialized_output: Option<String>,
+    /// The JSON-serialized custom status, if payloads were fetched.
     pub serialized_custom_status: Option<String>,
+    /// Failure details when the orchestration failed.
     pub failure_details: Option<FailureDetails>,
 }
 
@@ -50,12 +76,20 @@ impl TryFrom<&proto::GetInstanceResponse> for OrchestrationState {
                 .last_updated_timestamp
                 .as_ref()
                 .and_then(from_timestamp),
+            started_at: state.started_at.as_ref().and_then(from_timestamp),
+            parent_instance_id: non_empty(state.parent_instance_id.as_deref()),
+            parent_app_id: non_empty(state.parent_app_id.as_deref()),
             serialized_input: state.input.clone(),
             serialized_output: state.output.clone(),
             serialized_custom_status: state.custom_status.clone(),
             failure_details: state.failure_details.as_ref().map(FailureDetails::from),
         })
     }
+}
+
+/// Maps an optional proto string to `None` when absent or empty.
+fn non_empty(s: Option<&str>) -> Option<String> {
+    s.filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 impl OrchestrationState {
@@ -197,6 +231,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Completed,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: None,
             serialized_output: None,
             serialized_custom_status: None,
@@ -213,6 +250,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Failed,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: None,
             serialized_output: None,
             serialized_custom_status: None,
@@ -245,6 +285,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Failed,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: None,
             serialized_output: None,
             serialized_custom_status: None,
@@ -284,6 +327,9 @@ mod tests {
                 runtime_status: status,
                 created_at: None,
                 last_updated_at: None,
+                started_at: None,
+                parent_instance_id: None,
+                parent_app_id: None,
                 serialized_input: None,
                 serialized_output: None,
                 serialized_custom_status: None,
@@ -316,6 +362,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Completed,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: Some(r#"{"key":"val"}"#.into()),
             serialized_output: Some("42".into()),
             serialized_custom_status: Some(r#""custom""#.into()),
@@ -343,6 +392,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Running,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: None,
             serialized_output: None,
             serialized_custom_status: None,
@@ -369,6 +421,9 @@ mod tests {
             runtime_status: OrchestrationStatus::Failed,
             created_at: None,
             last_updated_at: None,
+            started_at: None,
+            parent_instance_id: None,
+            parent_app_id: None,
             serialized_input: None,
             serialized_output: None,
             serialized_custom_status: None,
@@ -421,5 +476,38 @@ mod tests {
         assert_eq!(fd.message, "thread panic");
         assert_eq!(fd.error_type, "Panic");
         assert_eq!(fd.stack_trace.as_deref(), Some("stack"));
+    }
+
+    #[test]
+    fn try_from_maps_started_at_and_parent_fields() {
+        let mut ws = make_workflow_state(1);
+        ws.started_at = Some(Timestamp {
+            seconds: 1_700_000_050,
+            nanos: 0,
+        });
+        ws.parent_instance_id = Some("parent".into());
+        ws.parent_app_id = Some("parent-app".into());
+        let resp = proto::GetInstanceResponse {
+            exists: true,
+            workflow_state: Some(ws),
+        };
+        let state = OrchestrationState::try_from(&resp).unwrap();
+        assert_eq!(state.started_at.unwrap().timestamp(), 1_700_000_050);
+        assert_eq!(state.parent_instance_id.as_deref(), Some("parent"));
+        assert_eq!(state.parent_app_id.as_deref(), Some("parent-app"));
+    }
+
+    #[test]
+    fn try_from_absent_or_empty_parent_fields_are_none() {
+        let mut ws = make_workflow_state(1);
+        ws.parent_instance_id = Some(String::new());
+        let resp = proto::GetInstanceResponse {
+            exists: true,
+            workflow_state: Some(ws),
+        };
+        let state = OrchestrationState::try_from(&resp).unwrap();
+        assert!(state.started_at.is_none());
+        assert!(state.parent_instance_id.is_none());
+        assert!(state.parent_app_id.is_none());
     }
 }
