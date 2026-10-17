@@ -92,6 +92,11 @@ pub struct ActivityInvocation {
     pub propagated_history: ::core::option::Option<
         super::super::super::super::PropagatedHistory,
     >,
+    /// Execution ID of the workflow generation that dispatched the activity.
+    /// Sent back with the activity's result so the workflow can reject a result
+    /// dispatched by another generation: task IDs restart on ContinueAsNew.
+    #[prost(string, optional, tag = "3")]
+    pub parent_execution_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateWorkflowInstanceRequest {
