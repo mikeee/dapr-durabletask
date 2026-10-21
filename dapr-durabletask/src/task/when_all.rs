@@ -99,16 +99,18 @@ impl Tracking {
     }
 
     /// Poll task `i` with its own waker, returning its failure if it failed.
+    /// A completed task stays watched: its result can still be overwritten
+    /// with a failure, which must short-circuit like any other.
     fn check(&mut self, tasks: &mut [CompletableTask], i: usize) -> Option<DurableTaskError> {
-        if self.done[i] {
-            return None;
-        }
         let mut cx = Context::from_waker(&self.wakers[i]);
         match Pin::new(&mut tasks[i]).poll(&mut cx) {
             Poll::Ready(Err(e)) => Some(e),
             Poll::Ready(Ok(_)) => {
-                self.done[i] = true;
-                self.remaining -= 1;
+                if !self.done[i] {
+                    self.done[i] = true;
+                    self.remaining -= 1;
+                }
+                tasks[i].watch(&self.wakers[i]);
                 None
             }
             Poll::Pending => None,
@@ -160,6 +162,18 @@ impl Future for WhenAllTask {
             })
             .collect();
         Poll::Ready(results)
+    }
+}
+
+impl Drop for WhenAllTask {
+    /// Unregister the per-task wakers so tasks that outlive the combinator
+    /// do not keep them, and through them the ready queue, alive.
+    fn drop(&mut self) {
+        if let Some(tracking) = &self.tracking {
+            for (task, waker) in self.tasks.iter().zip(&tracking.wakers) {
+                task.unwatch(waker);
+            }
+        }
     }
 }
 
@@ -462,5 +476,51 @@ mod tests {
             "fan-in took {:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn test_when_all_short_circuits_on_failure_overwriting_completion() {
+        let t1 = CompletableTask::new();
+        let t2 = CompletableTask::new();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = when_all(vec![t1.clone(), t2]);
+        assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
+
+        t1.complete(Some("1".to_string()));
+        assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
+
+        t1.fail(FailureDetails {
+            message: "late".to_string(),
+            error_type: "Error".to_string(),
+            stack_trace: None,
+        });
+        match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Err(DurableTaskError::TaskFailed { message, .. })) => {
+                assert_eq!(message, "late");
+            }
+            other => panic!("expected Ready(Err(TaskFailed)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_when_all_drop_unregisters_wakers() {
+        let pending = CompletableTask::new();
+        let done = CompletableTask::new();
+        done.complete(None);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..10 {
+            let mut fut = when_all(vec![pending.clone(), done.clone()]);
+            assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
+            assert_eq!(pending.waker_count(), 1);
+            assert_eq!(done.waker_count(), 1);
+        }
+        assert_eq!(
+            pending.waker_count(),
+            0,
+            "dropped combinators leaked wakers"
+        );
+        assert_eq!(done.waker_count(), 0, "dropped combinators leaked wakers");
     }
 }

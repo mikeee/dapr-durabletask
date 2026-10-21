@@ -124,6 +124,27 @@ impl CompletableTask {
         inner.result.clone()
     }
 
+    /// Register `waker` to be woken on the next resolution, even when the
+    /// task is already resolved, so a waiter notices a later overwrite.
+    pub(crate) fn watch(&self, waker: &Waker) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !inner.wakers.iter().any(|w| w.will_wake(waker)) {
+            inner.wakers.push(waker.clone());
+        }
+    }
+
+    /// Remove a registration made by `watch` or by polling with `waker`.
+    pub(crate) fn unwatch(&self, waker: &Waker) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.wakers.retain(|w| !w.will_wake(waker));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waker_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.wakers.len()
+    }
+
     /// Check if two tasks share the same inner state (are clones of each other).
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)

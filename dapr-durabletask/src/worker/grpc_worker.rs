@@ -405,15 +405,9 @@ impl TaskHubGrpcWorker {
                     // Refresh the cache with the committed history just
                     // replayed, unless a newer dispatch superseded this one;
                     // drop it once the execution ended.
-                    if let Some(committed) = committed
-                        && history_cache.is_latest_dispatch(&instance_id, &completion_token)
-                    {
-                        if workflow_history_reset(&response) {
-                            history_cache.delete(&instance_id);
-                            history_cache.forget_dispatch(&instance_id);
-                        } else {
-                            history_cache.put(&instance_id, committed);
-                        }
+                    if let Some(committed) = committed {
+                        let committed = (!workflow_history_reset(&response)).then_some(committed);
+                        history_cache.commit_dispatch(&instance_id, &completion_token, committed);
                     }
                     // TODO: migrate to complete_work_item once sidecar supports it.
                     #[allow(deprecated)]
@@ -987,17 +981,41 @@ impl WorkflowHistoryCache {
             .insert(instance_id.to_string(), (token.to_string(), now));
     }
 
-    /// Whether `token` still belongs to the newest dispatch for `instance_id`.
-    /// An instance with no recorded dispatch accepts any token.
-    pub(crate) fn is_latest_dispatch(&self, instance_id: &str, token: &str) -> bool {
-        self.tokens()
+    /// Record the outcome of the dispatch `token` for `instance_id`: store its
+    /// `committed` history, or, when `None` (the execution ended), drop the
+    /// cached history and the dispatch marker. Nothing changes if a newer
+    /// dispatch superseded `token`; an instance with no recorded dispatch
+    /// accepts any token. Both locks are held across the check and the write
+    /// so a dispatch noted concurrently cannot be overwritten or forgotten.
+    /// Returns whether the cache was updated.
+    pub(crate) fn commit_dispatch(
+        &self,
+        instance_id: &str,
+        token: &str,
+        committed: Option<Vec<proto::HistoryEvent>>,
+    ) -> bool {
+        let bytes = match &committed {
+            Some(events) if self.max_bytes > 0 => history_bytes(events),
+            _ => 0,
+        };
+        let now = (self.now)();
+        // Same lock order as `sweep_expired`: entries, then markers.
+        let mut state = self.lock();
+        let mut tokens = self.tokens();
+        if tokens
             .get(instance_id)
-            .is_none_or(|(latest, _)| latest == token)
-    }
-
-    /// Drop the newest-dispatch marker of an instance whose execution ended.
-    pub(crate) fn forget_dispatch(&self, instance_id: &str) {
-        self.tokens().remove(instance_id);
+            .is_some_and(|(latest, _)| latest != token)
+        {
+            return false;
+        }
+        match committed {
+            Some(events) => self.insert_and_evict(&mut state, instance_id, events, bytes, now),
+            None => {
+                state.remove(instance_id);
+                tokens.remove(instance_id);
+            }
+        }
+        true
     }
 
     /// A copy of the cached history, refreshing the entry's sliding TTL.
@@ -1009,7 +1027,8 @@ impl WorkflowHistoryCache {
 
     /// Store an instance's committed history, then evict least-recently-used
     /// entries (never this one) until within the instance cap and byte budget.
-    pub(crate) fn put(&self, instance_id: &str, events: Vec<proto::HistoryEvent>) {
+    #[cfg(test)]
+    fn put(&self, instance_id: &str, events: Vec<proto::HistoryEvent>) {
         // Only size the history when a byte budget is configured.
         let bytes = if self.max_bytes > 0 {
             history_bytes(&events)
@@ -1018,6 +1037,17 @@ impl WorkflowHistoryCache {
         };
         let now = (self.now)();
         let mut state = self.lock();
+        self.insert_and_evict(&mut state, instance_id, events, bytes, now);
+    }
+
+    fn insert_and_evict(
+        &self,
+        state: &mut HistoryCacheEntries,
+        instance_id: &str,
+        events: Vec<proto::HistoryEvent>,
+        bytes: u64,
+        now: Instant,
+    ) {
         state.insert(instance_id, events, bytes, now);
 
         // A single entry larger than the budget is kept (soft overage).
@@ -1034,7 +1064,8 @@ impl WorkflowHistoryCache {
         }
     }
 
-    pub(crate) fn delete(&self, instance_id: &str) {
+    #[cfg(test)]
+    fn delete(&self, instance_id: &str) {
         self.lock().remove(instance_id);
     }
 
@@ -1977,15 +2008,20 @@ mod tests {
         fn test_history_cache_superseded_dispatch_cannot_write() {
             let c = cache(HistoryCacheOptions::default());
             c.note_dispatch("wf1", "token-1");
-            assert!(c.is_latest_dispatch("wf1", "token-1"));
+            assert!(c.commit_dispatch("wf1", "token-1", Some(events(1))));
             // The markers survive a reset (reconnect) to fence stale handlers.
             c.reset();
             c.note_dispatch("wf1", "token-2");
-            assert!(!c.is_latest_dispatch("wf1", "token-1"));
-            assert!(c.is_latest_dispatch("wf1", "token-2"));
-            c.forget_dispatch("wf1");
-            assert!(c.is_latest_dispatch("wf1", "token-1"));
-            assert!(c.is_latest_dispatch("other", "any"));
+            assert!(!c.commit_dispatch("wf1", "token-1", Some(events(5))));
+            assert!(!c.commit_dispatch("wf1", "token-1", None));
+            assert!(c.get("wf1").is_none(), "superseded dispatch wrote");
+            assert!(c.commit_dispatch("wf1", "token-2", Some(events(2))));
+            assert_eq!(c.get("wf1").map(|e| e.len()), Some(2));
+            // The execution ended: history and marker are dropped together.
+            assert!(c.commit_dispatch("wf1", "token-2", None));
+            assert!(c.get("wf1").is_none());
+            assert!(c.commit_dispatch("wf1", "token-1", Some(events(1))));
+            assert!(c.commit_dispatch("other", "any", Some(events(1))));
         }
 
         #[test]
