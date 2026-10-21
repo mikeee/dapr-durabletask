@@ -1298,7 +1298,7 @@ pub struct GetWorkItemsRequest {
 pub struct WorkItem {
     #[prost(string, tag = "10")]
     pub completion_token: ::prost::alloc::string::String,
-    #[prost(oneof = "work_item::Request", tags = "1, 2")]
+    #[prost(oneof = "work_item::Request", tags = "1, 2, 6")]
     pub request: ::core::option::Option<work_item::Request>,
 }
 /// Nested message and enum types in `WorkItem`.
@@ -1309,8 +1309,12 @@ pub mod work_item {
         WorkflowRequest(super::WorkflowRequest),
         #[prost(message, tag = "2")]
         ActivityRequest(super::ActivityRequest),
+        #[prost(message, tag = "6")]
+        HealthPing(super::HealthPing),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HealthPing {}
 /// No payload
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompleteTaskResponse {}
@@ -1409,6 +1413,11 @@ pub enum WorkerCapability {
     /// there. On a cache miss the worker recovers the full history via the
     /// GetInstanceHistory RPC, so the optimization never affects correctness.
     StatefulHistory = 2,
+    /// Indicates that the worker accepts and discards WorkItem.healthPing. The
+    /// service then sends one periodically on the work-item stream so that
+    /// proxies with a stream idle timeout do not close the stream while no work
+    /// is due. Workers that do not advertise this never receive a health ping.
+    HealthPing = 3,
 }
 impl WorkerCapability {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1419,6 +1428,7 @@ impl WorkerCapability {
         match self {
             Self::Unspecified => "WORKER_CAPABILITY_UNSPECIFIED",
             Self::StatefulHistory => "WORKER_CAPABILITY_STATEFUL_HISTORY",
+            Self::HealthPing => "WORKER_CAPABILITY_HEALTH_PING",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1426,6 +1436,7 @@ impl WorkerCapability {
         match value {
             "WORKER_CAPABILITY_UNSPECIFIED" => Some(Self::Unspecified),
             "WORKER_CAPABILITY_STATEFUL_HISTORY" => Some(Self::StatefulHistory),
+            "WORKER_CAPABILITY_HEALTH_PING" => Some(Self::HealthPing),
             _ => None,
         }
     }
