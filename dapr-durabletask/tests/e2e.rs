@@ -9732,7 +9732,7 @@ mod backend {
                             .await
                             .expect("complete activity");
                     }
-                    None => {}
+                    Some(proto::work_item::Request::HealthPing(_)) | None => {}
                 }
             }
         }
