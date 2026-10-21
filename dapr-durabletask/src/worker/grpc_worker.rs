@@ -188,7 +188,7 @@ impl TaskHubGrpcWorker {
         shutdown: &tokio_util::sync::CancellationToken,
     ) -> crate::api::Result<()> {
         let request = proto::GetWorkItemsRequest {
-            capabilities: Vec::new(),
+            capabilities: vec![proto::WorkerCapability::HealthPing as i32],
         };
         let mut stream = client.get_work_items(request).await?.into_inner();
         let semaphore = Arc::new(Semaphore::new(options.max_concurrent_work_items));
@@ -359,6 +359,7 @@ impl TaskHubGrpcWorker {
                     }
                 });
             }
+            Some(Request::HealthPing(_)) => {}
             None => {
                 tracing::warn!("Received work item with no request payload");
             }
