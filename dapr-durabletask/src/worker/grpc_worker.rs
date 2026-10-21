@@ -359,6 +359,7 @@ impl TaskHubGrpcWorker {
                     }
                 });
             }
+            Some(Request::HealthPing(_)) => {}
             None => {
                 tracing::warn!("Received work item with no request payload");
             }
