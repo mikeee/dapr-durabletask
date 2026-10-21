@@ -46,6 +46,23 @@ struct OrchestratorEntry {
     is_latest: bool,
 }
 
+/// Outcome of resolving the orchestrator for a work item.
+pub(crate) enum OrchestratorResolution<'a> {
+    /// A handler was found; `version` is the registered version label of the
+    /// selected entry (`None` for an unversioned entry).
+    Found {
+        f: &'a OrchestratorFn,
+        version: Option<&'a str>,
+    },
+    /// The workflow is known (or a version was pinned in history) but the
+    /// required version is not registered on this worker. The turn must stall
+    /// (`WorkflowVersionNotAvailableAction`) rather than fail, so that a worker
+    /// that has the version can resume it later.
+    VersionNotAvailable,
+    /// No handler for this name at all.
+    NotRegistered,
+}
+
 /// Registry for orchestrator and activity functions.
 ///
 /// Functions must be registered before the worker is started. Versioned
@@ -261,6 +278,65 @@ impl Registry {
         None
     }
 
+    /// Resolve the orchestrator for a work item, following durabletask-go's
+    /// `TaskRegistry.ResolveWorkflow` for pinned versions.
+    ///
+    /// * `pinned` is the version recorded in history (the
+    ///   `WorkflowStarted.version.name` of a previous turn). A pinned instance
+    ///   must replay with exactly that version (or an unversioned handler);
+    ///   otherwise the result is [`OrchestratorResolution::VersionNotAvailable`].
+    /// * Without a pin, `requested` (the `ExecutionStarted.version`) is
+    ///   resolved with [`get_orchestrator_version`](Self::get_orchestrator_version).
+    ///   If nothing matches but versions of the name are registered, the
+    ///   requested version is not available on this worker.
+    pub(crate) fn resolve_orchestrator(
+        &self,
+        name: &str,
+        pinned: Option<&str>,
+        requested: Option<&str>,
+    ) -> OrchestratorResolution<'_> {
+        fn found(e: &OrchestratorEntry) -> OrchestratorResolution<'_> {
+            OrchestratorResolution::Found {
+                f: &e.f,
+                version: e.version.as_deref(),
+            }
+        }
+
+        let entries = self.orchestrators.get(name);
+
+        if let Some(pinned) = pinned {
+            let Some(entries) = entries else {
+                return OrchestratorResolution::VersionNotAvailable;
+            };
+            return entries
+                .iter()
+                .find(|e| e.version.as_deref() == Some(pinned))
+                .or_else(|| entries.iter().find(|e| e.version.is_none()))
+                .map(found)
+                .unwrap_or(OrchestratorResolution::VersionNotAvailable);
+        }
+
+        let Some(entries) = entries else {
+            return OrchestratorResolution::NotRegistered;
+        };
+        if let Some(v) = requested
+            && let Some(entry) = entries.iter().find(|e| e.version.as_deref() == Some(v))
+        {
+            return found(entry);
+        }
+        if let Some(entry) = entries.iter().rev().find(|e| e.is_latest) {
+            return found(entry);
+        }
+        if let Some(entry) = entries.iter().find(|e| e.version.is_none()) {
+            return found(entry);
+        }
+        if requested.is_some() {
+            OrchestratorResolution::VersionNotAvailable
+        } else {
+            OrchestratorResolution::NotRegistered
+        }
+    }
+
     /// Look up a registered activity by name.
     pub fn get_activity(&self, name: &str) -> Option<&ActivityFn> {
         self.activities.get(name)
@@ -365,5 +441,61 @@ mod tests {
         // Requesting a specific version when only unversioned exists falls
         // back to the unversioned entry.
         assert!(reg.get_orchestrator_version("orch", Some("any")).is_some());
+    }
+
+    fn resolved_version<'a>(r: &OrchestratorResolution<'a>) -> Option<Option<&'a str>> {
+        match r {
+            OrchestratorResolution::Found { version, .. } => Some(*version),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_orchestrator_pinned_version() {
+        let mut reg = Registry::new();
+        reg.add_versioned_orchestrator("orch", "v1", |_| async move { Ok(None) });
+        reg.add_latest_orchestrator("orch", "v2", |_| async move { Ok(None) });
+
+        // A pinned version resolves exactly and never falls back to latest.
+        let r = reg.resolve_orchestrator("orch", Some("v1"), None);
+        assert_eq!(resolved_version(&r), Some(Some("v1")));
+        assert!(matches!(
+            reg.resolve_orchestrator("orch", Some("v9"), None),
+            OrchestratorResolution::VersionNotAvailable
+        ));
+        // A pin for an unknown workflow is also an unavailable version (Go).
+        assert!(matches!(
+            reg.resolve_orchestrator("nope", Some("v1"), None),
+            OrchestratorResolution::VersionNotAvailable
+        ));
+        // Without a pin: latest, as before.
+        let r = reg.resolve_orchestrator("orch", None, Some("v9"));
+        assert_eq!(resolved_version(&r), Some(Some("v2")));
+        let r = reg.resolve_orchestrator("orch", None, None);
+        assert_eq!(resolved_version(&r), Some(Some("v2")));
+        assert!(matches!(
+            reg.resolve_orchestrator("nope", None, None),
+            OrchestratorResolution::NotRegistered
+        ));
+    }
+
+    #[test]
+    fn test_resolve_orchestrator_unversioned_and_missing_latest() {
+        let mut reg = Registry::new();
+        reg.add_named_orchestrator("plain", dummy_orchestrator);
+        let r = reg.resolve_orchestrator("plain", Some("v1"), None);
+        assert_eq!(resolved_version(&r), Some(None));
+
+        reg.add_versioned_orchestrator("only_v1", "v1", |_| async move { Ok(None) });
+        // Requested version absent, no latest and no unversioned entry.
+        assert!(matches!(
+            reg.resolve_orchestrator("only_v1", None, Some("v2")),
+            OrchestratorResolution::VersionNotAvailable
+        ));
+        // No version requested at all: still not resolvable, reported as such.
+        assert!(matches!(
+            reg.resolve_orchestrator("only_v1", None, None),
+            OrchestratorResolution::NotRegistered
+        ));
     }
 }

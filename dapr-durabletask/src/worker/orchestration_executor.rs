@@ -1,26 +1,47 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::Ordering;
-use std::task::Poll;
+use std::task::{Context, Poll, Waker};
 
-use futures::FutureExt;
+use futures::future::BoxFuture;
 
-use crate::api::{DurableTaskError, FailureDetails, OrchestrationStatus};
+use crate::api::{DurableTaskError, FailureDetails};
 use crate::internal::from_timestamp;
 use crate::proto;
 use crate::proto::history_event::EventType;
+use crate::proto::workflow_action::WorkflowActionType;
 use crate::task::OrchestrationContext;
-use crate::task::orchestration_context::{OrchestrationContextInner, lock_inner};
+use crate::task::orchestration_context::{
+    BufferedEvent, BufferedResolution, FAR_FUTURE_TIMESTAMP, OrchestrationContextInner, Resolution,
+    TaskKind, lock_inner,
+};
 
 use super::options::WorkerOptions;
 use super::registry::OrchestratorFn;
 
+type OrchestratorFuture = BoxFuture<'static, crate::api::Result<Option<String>>>;
+
 /// Executes orchestrator functions by replaying history and processing new events.
 ///
-/// The executor follows the durable task replay model:
-/// 1. Process old (past) events to pre-populate completed tasks
-/// 2. Process new events to deliver results and external events
-/// 3. Run the orchestrator function (unless suspended, terminated, or already complete)
-/// 4. Collect pending actions and build the response
+/// The executor follows the durable task replay model, matching durabletask-go:
+/// history events (past, then new) are applied one at a time, and the
+/// orchestrator is resumed after every event that may unblock it. This keeps
+/// `current_utc_datetime`, `is_replaying` and `is_patched` accurate at each
+/// point of the replay, and makes the order in which the orchestrator observes
+/// results identical between the original execution and every replay.
+///
+/// Scheduling events in history (`TaskScheduled`, `TimerCreated`,
+/// `ChildWorkflowInstanceCreated`) retire the matching action produced by the
+/// replayed orchestrator; a mismatch is a non-determinism failure. Only
+/// actions not yet recorded in history are returned to the runtime.
 pub struct OrchestrationExecutor;
+
+/// Whether applying an event may have unblocked the orchestrator.
+#[derive(PartialEq, Eq)]
+enum Resume {
+    No,
+    Yes,
+    Start,
+}
 
 impl OrchestrationExecutor {
     /// Execute an orchestrator function by replaying history and processing new events.
@@ -42,6 +63,77 @@ impl OrchestrationExecutor {
             "Starting orchestration execution"
         );
 
+        // Start an OTel orchestration span covering the replay.
+        #[cfg(feature = "opentelemetry")]
+        let otel_ctx = {
+            let (name, parent_tc) = old_events
+                .iter()
+                .chain(new_events.iter())
+                .find_map(|e| match &e.event_type {
+                    Some(EventType::ExecutionStarted(es)) => {
+                        Some((es.name.as_str(), es.parent_trace_context.as_ref()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let parent_ctx = crate::internal::otel::context_from_trace_context(parent_tc);
+            crate::internal::otel::start_orchestration_span(&parent_ctx, name, instance_id)
+        };
+
+        let response = Self::replay(
+            orchestrator_fn,
+            instance_id,
+            &old_events,
+            &new_events,
+            options,
+            propagated_history,
+            completion_token,
+        );
+
+        #[cfg(feature = "opentelemetry")]
+        {
+            let completion = response
+                .actions
+                .iter()
+                .find_map(|a| match &a.workflow_action_type {
+                    Some(WorkflowActionType::CompleteWorkflow(c)) => Some(c),
+                    _ => None,
+                });
+            if let Some(completion) = completion {
+                let status = proto::OrchestrationStatus::try_from(completion.workflow_status)
+                    .unwrap_or(proto::OrchestrationStatus::Failed);
+                let label = match status {
+                    proto::OrchestrationStatus::Completed => "COMPLETED",
+                    proto::OrchestrationStatus::ContinuedAsNew => "CONTINUED_AS_NEW",
+                    proto::OrchestrationStatus::Terminated => "TERMINATED",
+                    _ => "FAILED",
+                };
+                crate::internal::otel::set_span_status_attribute(&otel_ctx, label);
+                if let Some(fd) = &completion.failure_details {
+                    crate::internal::otel::set_span_error(&otel_ctx, &fd.error_message);
+                }
+            }
+            crate::internal::otel::end_span(&otel_ctx);
+        }
+
+        tracing::debug!(
+            instance_id = %instance_id,
+            actions = response.actions.len(),
+            "Built orchestration response"
+        );
+        Ok(response)
+    }
+
+    /// Replay the history and build the response.
+    fn replay(
+        orchestrator_fn: &OrchestratorFn,
+        instance_id: &str,
+        old_events: &[proto::HistoryEvent],
+        new_events: &[proto::HistoryEvent],
+        options: &WorkerOptions,
+        propagated_history: Option<crate::api::PropagatedHistory>,
+        completion_token: String,
+    ) -> proto::WorkflowResponse {
         // Name and input start empty and are overwritten when ExecutionStarted is replayed.
         let ctx = OrchestrationContext::new(
             instance_id.to_string(),
@@ -52,247 +144,309 @@ impl OrchestrationExecutor {
             options,
             old_events.len() + new_events.len(),
         );
-
-        // Stash the propagated history (if any) before running the function so
-        // that ctx.propagated_history() is available during user code.
-        if propagated_history.is_some() {
-            let mut inner = lock_inner(&ctx.inner);
-            inner.propagated_history = propagated_history.map(std::sync::Arc::new);
-        }
-
-        // Process all history events under a single lock acquisition.
-        //
-        // Completions applied while draining old events are tagged
-        // "during replay"; those applied from new events are tagged "new".
-        // `CompletableTask::poll` then clears the shared `is_replaying`
-        // flag the first time the orchestrator awaits a "new" completion —
-        // the replay frontier.
-        let initially_replaying = !old_events.is_empty();
         {
             let mut inner = lock_inner(&ctx.inner);
-            inner.is_replaying.store(true, Ordering::Release);
-            tracing::debug!(
-                instance_id = %instance_id,
-                count = old_events.len(),
-                "Replaying old events"
-            );
-            for event in &old_events {
-                Self::process_event(
-                    &mut inner,
-                    event,
-                    instance_id,
-                    options.max_identifier_length,
-                );
+            inner.history_len = old_events.len() + new_events.len();
+            // Every recorded patch is reported back even if the replay stops
+            // before reaching the turn that recorded it.
+            for event in old_events.iter().chain(new_events) {
+                if let Some(EventType::WorkflowStarted(ws)) = &event.event_type
+                    && let Some(version) = &ws.version
+                {
+                    for patch in &version.patches {
+                        if !inner.recorded_patches.contains(patch) {
+                            inner.recorded_patches.push(patch.clone());
+                        }
+                    }
+                }
             }
-
-            inner.is_replaying.store(false, Ordering::Release);
-            tracing::debug!(
-                instance_id = %instance_id,
-                count = new_events.len(),
-                "Processing new events"
-            );
-            for event in &new_events {
-                Self::process_event(
-                    &mut inner,
-                    event,
-                    instance_id,
-                    options.max_identifier_length,
-                );
-            }
-
-            // Brand-new executions run at the frontier from the first poll;
-            // re-runs start in replay and clear the flag as awaits resolve.
-            inner
-                .is_replaying
-                .store(initially_replaying, Ordering::Release);
+            // Stash the propagated history (if any) before running the function so
+            // that ctx.propagated_history() is available during user code.
+            inner.propagated_history = propagated_history.map(std::sync::Arc::new);
         }
-
-        // Start an OTel orchestration span
-        #[cfg(feature = "opentelemetry")]
-        let otel_ctx = {
-            let inner = lock_inner(&ctx.inner);
-            let parent_tc = Self::find_parent_trace_context(&old_events, &new_events);
-            let parent_ctx = crate::internal::otel::context_from_trace_context(parent_tc);
-            crate::internal::otel::start_orchestration_span(&parent_ctx, &inner.name, instance_id)
-        };
-
-        let should_run = {
-            let inner = lock_inner(&ctx.inner);
-            !inner.is_suspended && !inner.is_complete
-        };
-
-        if should_run {
-            tracing::debug!(instance_id = %instance_id, "Polling orchestrator function");
-
-            // Poll the orchestrator future once — if all awaited tasks are already
-            // completed from replay, the future runs to completion in a single poll.
-            let mut future = (orchestrator_fn)(ctx.clone()).boxed();
-            let poll_result = futures::poll!(future.as_mut());
-
-            match poll_result {
-                Poll::Ready(Ok(output)) => {
-                    let mut inner = lock_inner(&ctx.inner);
-                    if inner.continue_as_new_input.is_some() {
-                        tracing::info!(
-                            instance_id = %instance_id,
-                            orchestrator = %inner.name,
-                            "Orchestration continuing as new"
-                        );
-                        #[cfg(feature = "opentelemetry")]
-                        crate::internal::otel::set_span_status_attribute(
-                            &otel_ctx,
-                            "CONTINUED_AS_NEW",
-                        );
-                        inner.is_complete = true;
-                        inner.completion_status = Some(OrchestrationStatus::ContinuedAsNew);
-                    } else if !inner.is_complete {
-                        tracing::info!(
-                            instance_id = %instance_id,
-                            orchestrator = %inner.name,
-                            "Orchestration completed successfully"
-                        );
-                        #[cfg(feature = "opentelemetry")]
-                        crate::internal::otel::set_span_status_attribute(&otel_ctx, "COMPLETED");
-                        inner.is_complete = true;
-                        inner.completion_status = Some(OrchestrationStatus::Completed);
-                        inner.completion_result = output;
-                    }
-                }
-                Poll::Ready(Err(DurableTaskError::TaskFailed {
-                    message,
-                    failure_details,
-                })) => {
-                    let mut inner = lock_inner(&ctx.inner);
-                    tracing::warn!(
-                        instance_id = %instance_id,
-                        orchestrator = %inner.name,
-                        error = %message,
-                        "Orchestration failed due to task failure"
-                    );
-                    #[cfg(feature = "opentelemetry")]
-                    {
-                        crate::internal::otel::set_span_status_attribute(&otel_ctx, "FAILED");
-                        crate::internal::otel::set_span_error(&otel_ctx, &message);
-                    }
-                    inner.is_complete = true;
-                    inner.completion_status = Some(OrchestrationStatus::Failed);
-                    inner.completion_failure =
-                        Some(failure_details.unwrap_or_else(|| FailureDetails {
-                            message: message.clone(),
-                            error_type: "TaskFailed".to_string(),
-                            stack_trace: None,
-                        }));
-                }
-                Poll::Ready(Err(e)) => {
-                    let mut inner = lock_inner(&ctx.inner);
-                    tracing::error!(
-                        instance_id = %instance_id,
-                        orchestrator = %inner.name,
-                        error = %e,
-                        "Orchestration failed with error"
-                    );
-                    #[cfg(feature = "opentelemetry")]
-                    {
-                        crate::internal::otel::set_span_status_attribute(&otel_ctx, "FAILED");
-                        crate::internal::otel::set_span_error(&otel_ctx, &e.to_string());
-                    }
-                    inner.is_complete = true;
-                    inner.completion_status = Some(OrchestrationStatus::Failed);
-                    inner.completion_failure = Some(FailureDetails {
-                        message: e.to_string(),
-                        error_type: "OrchestratorError".to_string(),
-                        stack_trace: None,
-                    });
-                }
-                Poll::Pending => {
-                    let inner = lock_inner(&ctx.inner);
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        orchestrator = %inner.name,
-                        pending_actions = inner.pending_actions.len(),
-                        "Orchestrator yielded, waiting for tasks"
-                    );
-                }
-            }
-        } else {
-            let inner = lock_inner(&ctx.inner);
-            tracing::debug!(
-                instance_id = %instance_id,
-                is_suspended = inner.is_suspended,
-                is_complete = inner.is_complete,
-                "Skipping orchestrator execution"
-            );
-            #[cfg(feature = "opentelemetry")]
-            if inner.is_complete {
-                crate::internal::otel::set_span_status_attribute(&otel_ctx, "TERMINATED");
-            }
-        }
-
-        // End the OTel span
-        #[cfg(feature = "opentelemetry")]
-        crate::internal::otel::end_span(&otel_ctx);
-
-        let response = Self::build_response(&ctx, instance_id, completion_token);
-        tracing::debug!(
-            instance_id = %instance_id,
-            actions = response.actions.len(),
-            "Built orchestration response"
+        Self::replay_per_event(
+            orchestrator_fn,
+            &ctx,
+            old_events,
+            new_events,
+            options,
+            instance_id,
         );
-        Ok(response)
+        Self::build_response(&ctx, instance_id, completion_token)
     }
 
-    /// Find the parent trace context from ExecutionStarted events in history.
-    #[cfg(feature = "opentelemetry")]
-    fn find_parent_trace_context<'a>(
-        old_events: &'a [proto::HistoryEvent],
-        new_events: &'a [proto::HistoryEvent],
-    ) -> Option<&'a proto::TraceContext> {
-        old_events.iter().chain(new_events.iter()).find_map(|e| {
-            if let Some(EventType::ExecutionStarted(es)) = &e.event_type {
-                es.parent_trace_context.as_ref()
-            } else {
-                None
+    /// Apply history events one at a time, resuming the orchestrator after
+    /// each event that may unblock it.
+    fn replay_per_event(
+        orchestrator_fn: &OrchestratorFn,
+        ctx: &OrchestrationContext,
+        old_events: &[proto::HistoryEvent],
+        new_events: &[proto::HistoryEvent],
+        options: &WorkerOptions,
+        instance_id: &str,
+    ) {
+        let mut future: Option<OrchestratorFuture> = None;
+        let old_len = old_events.len();
+        'history: for (index, event) in old_events.iter().chain(new_events.iter()).enumerate() {
+            let during_replay = index < old_len;
+            if !Self::step(
+                orchestrator_fn,
+                ctx,
+                &mut future,
+                event,
+                index,
+                during_replay,
+                options,
+                instance_id,
+            ) {
+                break;
             }
-        })
+            // Events held while suspended are applied in their original order,
+            // resuming the orchestrator after each, as if they arrived now.
+            loop {
+                let Some(held) = lock_inner(&ctx.inner).resumed_events.pop_front() else {
+                    break;
+                };
+                if !Self::step(
+                    orchestrator_fn,
+                    ctx,
+                    &mut future,
+                    &held,
+                    index,
+                    during_replay,
+                    options,
+                    instance_id,
+                ) {
+                    break 'history;
+                }
+            }
+        }
+        drop(future);
     }
 
-    /// Process a single history event, updating the orchestration context state.
+    /// Apply one history event and resume the orchestrator if it may have
+    /// been unblocked. Returns `false` once the history cannot be applied.
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        orchestrator_fn: &OrchestratorFn,
+        ctx: &OrchestrationContext,
+        future: &mut Option<OrchestratorFuture>,
+        event: &proto::HistoryEvent,
+        index: usize,
+        during_replay: bool,
+        options: &WorkerOptions,
+        instance_id: &str,
+    ) -> bool {
+        let resume = {
+            let mut inner = lock_inner(&ctx.inner);
+            inner.history_index = index + 1;
+            inner.is_replaying.store(during_replay, Ordering::Release);
+            Self::apply_event(&mut inner, event, during_replay, options)
+        };
+        match resume {
+            Ok(Resume::No) => {}
+            Ok(Resume::Start) => {
+                tracing::debug!(instance_id = %instance_id, "Starting orchestrator function");
+                // The closure itself may panic before returning a future.
+                let started =
+                    std::panic::catch_unwind(AssertUnwindSafe(|| (orchestrator_fn)(ctx.clone())));
+                match started {
+                    Ok(f) => {
+                        *future = Some(f);
+                        Self::resume(ctx, future, instance_id);
+                    }
+                    Err(panic) => {
+                        *future = None;
+                        Self::record_outcome(ctx, Err(panic_message(panic.as_ref())), instance_id);
+                    }
+                }
+            }
+            Ok(Resume::Yes) => Self::resume(ctx, future, instance_id),
+            Err(failure) => {
+                tracing::error!(
+                    instance_id = %instance_id,
+                    error = %failure.message,
+                    "Orchestration failed while applying history"
+                );
+                *future = None;
+                lock_inner(&ctx.inner).fail_replay(failure);
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Poll the orchestrator once, recording its completion if it returns.
+    fn resume(
+        ctx: &OrchestrationContext,
+        future: &mut Option<OrchestratorFuture>,
+        instance_id: &str,
+    ) {
+        {
+            let inner = lock_inner(&ctx.inner);
+            if inner.is_terminated || inner.is_complete {
+                return;
+            }
+        }
+        let Some(fut) = future.as_mut() else {
+            return;
+        };
+
+        let mut cx = Context::from_waker(Waker::noop());
+        let poll = std::panic::catch_unwind(AssertUnwindSafe(|| fut.as_mut().poll(&mut cx)));
+        let outcome = match poll {
+            Ok(Poll::Pending) => {
+                tracing::debug!(instance_id = %instance_id, "Orchestrator yielded, waiting for tasks");
+                return;
+            }
+            Ok(Poll::Ready(result)) => Ok(result),
+            Err(panic) => Err(panic_message(panic.as_ref())),
+        };
+        *future = None;
+        Self::record_outcome(ctx, outcome, instance_id);
+    }
+
+    /// Queue the completion for the orchestrator's return value, or for the
+    /// message of a panic it raised.
+    fn record_outcome(
+        ctx: &OrchestrationContext,
+        outcome: Result<crate::api::Result<Option<String>>, String>,
+        instance_id: &str,
+    ) {
+        let mut inner = lock_inner(&ctx.inner);
+        match outcome {
+            Ok(Ok(output)) => {
+                if let Some(new_input) = inner.continue_as_new_input.clone() {
+                    tracing::info!(
+                        instance_id = %instance_id,
+                        orchestrator = %inner.name,
+                        "Orchestration continuing as new"
+                    );
+                    inner.set_complete(proto::OrchestrationStatus::ContinuedAsNew, new_input, None);
+                } else {
+                    tracing::info!(
+                        instance_id = %instance_id,
+                        orchestrator = %inner.name,
+                        "Orchestration completed successfully"
+                    );
+                    inner.set_complete(proto::OrchestrationStatus::Completed, output, None);
+                }
+            }
+            Ok(Err(DurableTaskError::TaskFailed {
+                message,
+                failure_details,
+            })) => {
+                tracing::warn!(
+                    instance_id = %instance_id,
+                    orchestrator = %inner.name,
+                    error = %message,
+                    "Orchestration failed due to task failure"
+                );
+                let failure = failure_details.unwrap_or(FailureDetails {
+                    message,
+                    error_type: "TaskFailed".to_string(),
+                    stack_trace: None,
+                });
+                inner.set_complete(proto::OrchestrationStatus::Failed, None, Some(failure));
+            }
+            Ok(Err(e)) => {
+                tracing::error!(
+                    instance_id = %instance_id,
+                    orchestrator = %inner.name,
+                    error = %e,
+                    "Orchestration failed with error"
+                );
+                let failure = FailureDetails {
+                    message: e.to_string(),
+                    error_type: "OrchestratorError".to_string(),
+                    stack_trace: None,
+                };
+                inner.set_complete(proto::OrchestrationStatus::Failed, None, Some(failure));
+            }
+            Err(message) => {
+                tracing::error!(
+                    instance_id = %instance_id,
+                    orchestrator = %inner.name,
+                    error = %message,
+                    "Orchestrator panicked"
+                );
+                let failure = FailureDetails {
+                    message,
+                    error_type: "OrchestratorPanic".to_string(),
+                    stack_trace: None,
+                };
+                inner.set_complete(proto::OrchestrationStatus::Failed, None, Some(failure));
+            }
+        }
+    }
+
+    /// Apply a single history event to the orchestration state.
     ///
-    /// Operates directly on the inner state to avoid per-event mutex acquisition.
-    /// The caller must hold the lock.
-    fn process_event(
+    /// Returns whether the orchestrator should be resumed, or the failure to
+    /// report if the history does not match the orchestrator's actions.
+    fn apply_event(
         inner: &mut OrchestrationContextInner,
         event: &proto::HistoryEvent,
-        instance_id: &str,
-        max_identifier_length: usize,
-    ) {
-        let event_type = match &event.event_type {
-            Some(et) => et,
-            None => return,
+        during_replay: bool,
+        options: &WorkerOptions,
+    ) -> Result<Resume, FailureDetails> {
+        let Some(event_type) = &event.event_type else {
+            return Ok(Resume::No);
+        };
+        let instance_id = inner.instance_id.clone();
+
+        // A terminated workflow processes no further events.
+        if inner.is_terminated {
+            return Ok(Resume::No);
+        }
+
+        // While suspended, hold events back until resumed or terminated.
+        // WorkflowStarted is applied straight away: the held events run on
+        // the resume turn, so they must see that turn's clock and the patches
+        // recorded on it.
+        if inner.is_suspended
+            && !matches!(
+                event_type,
+                EventType::ExecutionResumed(_)
+                    | EventType::ExecutionTerminated(_)
+                    | EventType::WorkflowStarted(_)
+            )
+        {
+            inner.suspended_events.push(event.clone());
+            return Ok(Resume::No);
+        }
+
+        let resolution = |kind: TaskKind, id: i32, what: &str, resolution: Resolution| {
+            (
+                kind,
+                id,
+                BufferedResolution {
+                    resolution,
+                    during_replay,
+                    description: format!("{what} for id {id}"),
+                    task_execution_id: None,
+                },
+            )
         };
 
-        let during_replay = inner.is_replaying.load(Ordering::Acquire);
-        let replay_handle = inner.is_replaying.clone();
-        // Get-or-insert a pending task at `seq`, ensuring placeholders
-        // inherit the shared replay flag.
-        let pending_task = |inner: &mut OrchestrationContextInner, seq: i32| {
-            let task = inner.pending_tasks.entry(seq).or_default();
-            task.set_replay_handle(replay_handle.clone());
-            task.clone()
-        };
-
-        match event_type {
+        let resolved = match event_type {
             EventType::WorkflowStarted(ws) => {
                 if let Some(ts) = &event.timestamp
                     && let Some(dt) = from_timestamp(ts)
                 {
                     inner.current_utc_datetime = dt;
                 }
+                // daprd records only the patches new to each turn, the
+                // durabletask-go backend the full list: keep each patch once,
+                // in first-seen order.
                 if let Some(version) = &ws.version {
                     for patch in &version.patches {
-                        inner.history_patches.insert(patch.clone());
+                        if !inner.history_patches.contains(patch) {
+                            inner.history_patches.push(patch.clone());
+                        }
                     }
                 }
+                return Ok(Resume::No);
             }
             EventType::ExecutionStarted(e) => {
                 tracing::debug!(
@@ -302,234 +456,327 @@ impl OrchestrationExecutor {
                 );
                 inner.name = std::sync::Arc::<str>::from(e.name.clone());
                 inner.input = e.input.clone();
+                return Ok(Resume::Start);
             }
-            EventType::TaskCompleted(e) => {
-                let seq = e.task_scheduled_id;
-                tracing::debug!(
-                    instance_id = %instance_id,
-                    task_id = seq,
-                    "Task completed"
+            EventType::TaskScheduled(e) => {
+                return Self::retire_action(inner, event, TaskKind::Activity, &e.name);
+            }
+            EventType::TimerCreated(_) => {
+                return Self::retire_action(inner, event, TaskKind::Timer, "");
+            }
+            EventType::ChildWorkflowInstanceCreated(e) => {
+                return Self::retire_action(inner, event, TaskKind::ChildWorkflow, &e.name);
+            }
+            EventType::DetachedWorkflowInstanceCreated(e) => {
+                return Self::retire_action(
+                    inner,
+                    event,
+                    TaskKind::DetachedWorkflow,
+                    &e.instance_id,
                 );
-                let task = pending_task(inner, seq);
-                if task.is_complete() {
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        task_id = seq,
-                        "Skipping duplicate task completion"
-                    );
-                    return;
-                }
-                task.complete_with_phase(e.result.clone(), during_replay);
             }
+            EventType::TaskCompleted(e) => resolution(
+                TaskKind::Activity,
+                e.task_scheduled_id,
+                "TaskCompleted",
+                Resolution::Completed(e.result.clone()),
+            ),
             EventType::TaskFailed(e) => {
-                let seq = e.task_scheduled_id;
-                let details = e
-                    .failure_details
-                    .as_ref()
-                    .map(FailureDetails::from)
-                    .unwrap_or_else(|| FailureDetails {
-                        message: "Task failed".to_string(),
-                        error_type: "Unknown".to_string(),
-                        stack_trace: None,
-                    });
-                tracing::debug!(
-                    instance_id = %instance_id,
-                    task_id = seq,
-                    error = %details.message,
-                    "Task failed"
+                let (kind, id, mut buffered) = resolution(
+                    TaskKind::Activity,
+                    e.task_scheduled_id,
+                    "TaskFailed",
+                    Resolution::Failed(
+                        e.failure_details
+                            .as_ref()
+                            .map(FailureDetails::from)
+                            .unwrap_or_else(|| FailureDetails {
+                                message: "Task failed".to_string(),
+                                error_type: "Unknown".to_string(),
+                                stack_trace: None,
+                            }),
+                    ),
                 );
-                let task = pending_task(inner, seq);
-                if task.is_complete() {
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        task_id = seq,
-                        "Skipping duplicate task completion"
-                    );
-                    return;
-                }
-                task.fail_with_phase(details, during_replay);
+                buffered.task_execution_id = Some(e.task_execution_id.clone());
+                (kind, id, buffered)
             }
-            EventType::TaskScheduled(_)
-            | EventType::TimerCreated(_)
-            | EventType::ChildWorkflowInstanceCreated(_) => {
-                inner.history_scheduled_count += 1;
-                inner.history_scheduled_ids.insert(event.event_id);
-            }
-            EventType::TimerFired(e) => {
-                let seq = e.timer_id;
-                tracing::debug!(instance_id = %instance_id, timer_id = seq, "Timer fired");
-                let task = pending_task(inner, seq);
-                if task.is_complete() {
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        task_id = seq,
-                        "Skipping duplicate task completion"
-                    );
-                    return;
-                }
-                task.complete_with_phase(None, during_replay);
-            }
-            EventType::ChildWorkflowInstanceCompleted(e) => {
-                let seq = e.task_scheduled_id;
-                tracing::debug!(
-                    instance_id = %instance_id,
-                    task_id = seq,
-                    "Child workflow completed"
-                );
-                let task = pending_task(inner, seq);
-                if task.is_complete() {
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        task_id = seq,
-                        "Skipping duplicate task completion"
-                    );
-                    return;
-                }
-                task.complete_with_phase(e.result.clone(), during_replay);
-            }
-            EventType::ChildWorkflowInstanceFailed(e) => {
-                let seq = e.task_scheduled_id;
-                let details = e
-                    .failure_details
-                    .as_ref()
-                    .map(FailureDetails::from)
-                    .unwrap_or_else(|| FailureDetails {
-                        message: "Sub-orchestration failed".to_string(),
-                        error_type: "Unknown".to_string(),
-                        stack_trace: None,
-                    });
-                tracing::debug!(
-                    instance_id = %instance_id,
-                    task_id = seq,
-                    error = %details.message,
-                    "Child workflow failed"
-                );
-                let task = pending_task(inner, seq);
-                if task.is_complete() {
-                    tracing::debug!(
-                        instance_id = %instance_id,
-                        task_id = seq,
-                        "Skipping duplicate task completion"
-                    );
-                    return;
-                }
-                task.fail_with_phase(details, during_replay);
-            }
+            EventType::TimerFired(e) => resolution(
+                TaskKind::Timer,
+                e.timer_id,
+                "TimerFired",
+                Resolution::Completed(None),
+            ),
+            EventType::ChildWorkflowInstanceCompleted(e) => resolution(
+                TaskKind::ChildWorkflow,
+                e.task_scheduled_id,
+                "ChildWorkflowInstanceCompleted",
+                Resolution::Completed(e.result.clone()),
+            ),
+            EventType::ChildWorkflowInstanceFailed(e) => resolution(
+                TaskKind::ChildWorkflow,
+                e.task_scheduled_id,
+                "ChildWorkflowInstanceFailed",
+                Resolution::Failed(
+                    e.failure_details
+                        .as_ref()
+                        .map(FailureDetails::from)
+                        .unwrap_or_else(|| FailureDetails {
+                            message: "Sub-orchestration failed".to_string(),
+                            error_type: "Unknown".to_string(),
+                            stack_trace: None,
+                        }),
+                ),
+            ),
             EventType::EventRaised(e) => {
-                if let Err(err) = crate::internal::validate_identifier(
-                    &e.name,
-                    "event name",
-                    max_identifier_length,
-                ) {
-                    tracing::warn!(
-                        instance_id = %instance_id,
-                        event_name = %e.name,
-                        error = %err,
-                        "Rejected event: invalid event name"
-                    );
-                    return;
-                }
-                let event_name = e.name.to_lowercase();
-                tracing::debug!(
-                    instance_id = %instance_id,
-                    event_name = %e.name,
-                    "External event raised"
-                );
-
-                if let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name)
-                    && !tasks.is_empty()
-                {
-                    let task = tasks
-                        .pop_front()
-                        .expect("pending event task queue is not empty");
-                    if task.is_complete() {
-                        tracing::debug!(
-                            instance_id = %instance_id,
-                            event_name = %e.name,
-                            "Skipping duplicate task completion"
-                        );
-                        return;
-                    }
-                    task.complete_with_phase(e.input.clone(), during_replay);
-                    return;
-                }
-
-                if inner.buffered_events.len() >= inner.config.max_event_names
-                    && !inner.buffered_events.contains_key(&event_name)
-                {
-                    tracing::warn!(
-                        instance_id = %instance_id,
-                        event_name = %e.name,
-                        "Event name limit reached, discarding event"
-                    );
-                    return;
-                }
-
-                let max_events = inner.config.max_events_per_name;
-                let events = inner.buffered_events.entry(event_name).or_default();
-                if events.len() >= max_events {
-                    tracing::warn!(
-                        instance_id = %instance_id,
-                        event_name = %e.name,
-                        "Event buffer limit reached, discarding event"
-                    );
-                    return;
-                }
-                events.push_back((e.input.clone(), during_replay));
+                Self::raise_event(inner, event, e, during_replay, options);
+                return Ok(Resume::Yes);
             }
             EventType::ExecutionSuspended(_) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration suspended");
                 inner.is_suspended = true;
+                return Ok(Resume::No);
             }
             EventType::ExecutionResumed(_) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration resumed");
                 inner.is_suspended = false;
+                // The replay loop applies the held events next, one at a time.
+                let held = std::mem::take(&mut inner.suspended_events);
+                inner.resumed_events.extend(held);
+                return Ok(Resume::No);
             }
             EventType::ExecutionTerminated(e) => {
                 tracing::info!(instance_id = %instance_id, "Orchestration terminated");
-                inner.is_complete = true;
-                inner.completion_status = Some(OrchestrationStatus::Terminated);
-                inner.completion_result = e.input.clone();
-                inner.pending_actions.clear();
+                inner.is_terminated = true;
+                match inner.completion().map(|c| c.workflow_status) {
+                    // Continue-as-new never overrides a terminate.
+                    Some(s) if s == proto::OrchestrationStatus::ContinuedAsNew as i32 => {
+                        inner.pending_actions.retain(|_, a| {
+                            !matches!(
+                                a.workflow_action_type,
+                                Some(WorkflowActionType::CompleteWorkflow(_))
+                            )
+                        });
+                    }
+                    // A completion recorded before the terminate wins.
+                    Some(_) => return Ok(Resume::No),
+                    None => {}
+                }
+                inner.set_complete(
+                    proto::OrchestrationStatus::Terminated,
+                    e.input.clone(),
+                    None,
+                );
+                return Ok(Resume::No);
             }
             EventType::ExecutionCompleted(_)
             | EventType::WorkflowCompleted(_)
             | EventType::EventSent(_)
             | EventType::ContinueAsNew(_)
-            | EventType::ExecutionStalled(_)
-            | EventType::DetachedWorkflowInstanceCreated(_) => {}
-        }
+            | EventType::ExecutionStalled(_) => return Ok(Resume::No),
+        };
+
+        let (kind, id, buffered) = resolved;
+        tracing::debug!(
+            instance_id = %instance_id,
+            resolution = %buffered.description,
+            "Applying resolution"
+        );
+        inner.resolve(kind, id, buffered);
+        Ok(Resume::Yes)
     }
 
-    fn make_complete_action(
-        id: i32,
-        status: proto::OrchestrationStatus,
-        result: Option<String>,
-        carryover_events: Vec<proto::HistoryEvent>,
-        failure: Option<FailureDetails>,
-    ) -> proto::WorkflowAction {
-        proto::WorkflowAction {
-            id,
-            router: None,
-            workflow_action_type: Some(
-                proto::workflow_action::WorkflowActionType::CompleteWorkflow(
-                    proto::CompleteWorkflowAction {
-                        workflow_status: status as i32,
-                        result,
-                        details: None,
-                        new_version: None,
-                        carryover_events,
-                        failure_details: failure.map(|f| proto::TaskFailureDetails {
-                            error_type: f.error_type,
-                            error_message: f.message,
-                            stack_trace: f.stack_trace,
-                            inner_failure: None,
-                            is_non_retriable: false,
-                        }),
-                    },
-                ),
-            ),
+    /// Retire the pending action a scheduling event in history records.
+    ///
+    /// Event-wait timers are tolerated in both directions so histories
+    /// recorded by releases that emitted them differently still replay: an
+    /// indefinite-wait timer the history lacks is dropped, and an unnamed
+    /// event-wait timer (as earlier releases of this SDK recorded when the
+    /// event was already buffered) that this execution did not emit is
+    /// absorbed. Either shift may deliver a buffered resolution, so the
+    /// orchestrator is then resumed.
+    ///
+    /// Detached workflow spawns are matched on the instance ID the call
+    /// returned, as in durabletask-go (`onDetachedWorkflowCreated`).
+    ///
+    /// Beyond durabletask-go, activity and child workflow names and timer
+    /// origins must match too, so a replay that diverges from its history
+    /// fails loudly instead of delivering results to the wrong task. A
+    /// repeated scheduling event for an already-retired ID (persisted by
+    /// older runtimes when older SDK releases re-emitted in-flight actions)
+    /// is ignored.
+    fn retire_action(
+        inner: &mut OrchestrationContextInner,
+        event: &proto::HistoryEvent,
+        kind: TaskKind,
+        name: &str,
+    ) -> Result<Resume, FailureDetails> {
+        let id = event.event_id;
+        let recorded_timer = match &event.event_type {
+            Some(EventType::TimerCreated(t)) => Some(t),
+            _ => None,
+        };
+        let recorded_event_timer = recorded_timer.and_then(recorded_event_timer);
+
+        let mut resume = Resume::No;
+        while inner.is_optional_event_timer_at(id) && recorded_event_timer != Some(true) {
+            inner.drop_optional_event_timer_at(id);
+            resume = Resume::Yes;
         }
+
+        let pending = inner
+            .pending_actions
+            .get(&id)
+            .and_then(|a| a.workflow_action_type.as_ref());
+        let scheduled_name = match (pending, kind) {
+            (Some(WorkflowActionType::ScheduleTask(a)), TaskKind::Activity) => {
+                Some(a.name.as_str())
+            }
+            (Some(WorkflowActionType::CreateChildWorkflow(a)), TaskKind::ChildWorkflow) => {
+                Some(a.name.as_str())
+            }
+            // A detached spawn is matched on the instance ID the call returned
+            // to the workflow code.
+            (Some(WorkflowActionType::CreateDetachedWorkflow(a)), TaskKind::DetachedWorkflow) => {
+                Some(a.instance_id.as_str())
+            }
+            _ => None,
+        };
+        let matches = match (pending, kind) {
+            (Some(WorkflowActionType::CreateTimer(a)), TaskKind::Timer) => {
+                timer_matches(a, recorded_timer, recorded_event_timer)
+            }
+            _ => scheduled_name == Some(name),
+        };
+        if matches {
+            inner.pending_actions.remove(&id);
+            inner.retired_actions.insert(id, kind);
+            return Ok(resume);
+        }
+
+        if inner.retired_actions.get(&id) == Some(&kind) {
+            tracing::debug!(
+                instance_id = %inner.instance_id,
+                id,
+                "Ignoring duplicate scheduling event"
+            );
+            return Ok(resume);
+        }
+
+        if let Some(t) = recorded_timer
+            && recorded_event_timer.is_some()
+            && t.name.is_none()
+            && (0..=inner.sequence_number).contains(&id)
+            && !inner.retired_actions.contains_key(&id)
+        {
+            inner.absorb_recorded_event_timer_at(id);
+            inner.retired_actions.insert(id, TaskKind::Timer);
+            return Ok(Resume::Yes);
+        }
+
+        let message = match (kind, scheduled_name) {
+            (TaskKind::Activity, Some(current)) => format!(
+                "a previous execution called CallActivity for '{name}' with sequence number {id} at this point in the workflow logic, but the current execution called CallActivity for '{current}'"
+            ),
+            (TaskKind::ChildWorkflow, Some(current)) => format!(
+                "a previous execution called CallChildWorkflow for '{name}' with sequence number {id} at this point in the workflow logic, but the current execution called CallChildWorkflow for '{current}'"
+            ),
+            (TaskKind::Activity, None) => format!(
+                "a previous execution called CallActivity for '{name}' and sequence number {id} at this point in the workflow logic, but the current execution doesn't have this action with this sequence number"
+            ),
+            (TaskKind::ChildWorkflow, None) => format!(
+                "a previous execution called CallChildWorkflow for '{name}' and sequence number {id} at this point in the workflow logic, but the current execution doesn't have this action with this sequence number"
+            ),
+            (TaskKind::DetachedWorkflow, Some(current)) => format!(
+                "a previous execution called ScheduleNewDetachedWorkflow for instance ID '{name}' and sequence number {id} at this point in the workflow logic, but the current execution scheduled instance ID '{current}'"
+            ),
+            (TaskKind::DetachedWorkflow, None) => format!(
+                "a previous execution called ScheduleNewDetachedWorkflow for instance ID '{name}' and sequence number {id} at this point in the workflow logic, but the current execution doesn't have this action with this sequence number"
+            ),
+            (TaskKind::Timer, _) => format!(
+                "a previous execution called CreateTimer with sequence number {id}, but the current execution doesn't have this action with this sequence number"
+            ),
+        };
+        Err(FailureDetails {
+            message,
+            error_type: "NonDeterminismError".to_string(),
+            stack_trace: None,
+        })
+    }
+
+    fn raise_event(
+        inner: &mut OrchestrationContextInner,
+        event: &proto::HistoryEvent,
+        e: &proto::EventRaisedEvent,
+        during_replay: bool,
+        options: &WorkerOptions,
+    ) {
+        let instance_id = inner.instance_id.clone();
+        if let Err(err) = crate::internal::validate_identifier(
+            &e.name,
+            "event name",
+            options.max_identifier_length,
+        ) {
+            tracing::warn!(
+                instance_id = %instance_id,
+                event_name = %e.name,
+                error = %err,
+                "Rejected event: invalid event name"
+            );
+            return;
+        }
+        let event_name = e.name.to_lowercase();
+        tracing::debug!(
+            instance_id = %instance_id,
+            event_name = %e.name,
+            "External event raised"
+        );
+
+        // Once the orchestrator has finished, its abandoned waiters must not
+        // consume events: they are buffered so continue-as-new carries them over.
+        if !inner.is_complete
+            && let Some(tasks) = inner.pending_event_tasks.get_mut(&event_name)
+        {
+            while let Some(task) = tasks.pop_front() {
+                if task.is_complete() {
+                    continue;
+                }
+                task.complete_with_phase(e.input.clone(), during_replay);
+                if tasks.is_empty() {
+                    inner.pending_event_tasks.remove(&event_name);
+                }
+                return;
+            }
+            inner.pending_event_tasks.remove(&event_name);
+        }
+
+        if inner.buffered_events.len() >= inner.config.max_event_names
+            && !inner.buffered_events.contains_key(&event_name)
+        {
+            tracing::warn!(
+                instance_id = %instance_id,
+                event_name = %e.name,
+                "Event name limit reached, discarding event"
+            );
+            return;
+        }
+
+        let max_events = inner.config.max_events_per_name;
+        let arrival = inner.buffered_event_count;
+        let events = inner.buffered_events.entry(event_name).or_default();
+        if events.len() >= max_events {
+            tracing::warn!(
+                instance_id = %instance_id,
+                event_name = %e.name,
+                "Event buffer limit reached, discarding event"
+            );
+            return;
+        }
+        events.push_back(BufferedEvent {
+            event: event.clone(),
+            during_replay,
+            arrival,
+        });
+        inner.buffered_event_count += 1;
     }
 
     fn build_response(
@@ -539,93 +786,66 @@ impl OrchestrationExecutor {
     ) -> proto::WorkflowResponse {
         let mut inner = lock_inner(&ctx.inner);
 
-        // Move actions out instead of cloning — the context is consumed after
-        // this response is built, so the original Vec is no longer needed.
-        let mut actions = std::mem::take(&mut inner.pending_actions);
-        // Operations already scheduled in history but not yet completed are
-        // re-created on replay; only new actions go back to the runtime.
-        actions.retain(|a| !inner.history_scheduled_ids.contains(&a.id));
-
-        if let Some(new_input) = inner.continue_as_new_input.take() {
-            let mut carryover_events = Vec::new();
-            if inner.save_events_on_continue {
-                for (name, events) in &inner.buffered_events {
-                    for (input, _during_replay) in events {
-                        carryover_events.push(proto::HistoryEvent {
-                            event_id: -1,
-                            timestamp: None,
-                            router: None,
-                            event_type: Some(EventType::EventRaised(proto::EventRaisedEvent {
-                                name: name.clone(),
-                                input: input.clone(),
-                            })),
-                        });
-                    }
-                }
+        if !inner.buffered_resolutions.is_empty() {
+            let mut unconsumed: Vec<_> = inner.buffered_resolutions.iter().collect();
+            unconsumed.sort_by_key(|(key, _)| **key);
+            for (_, buffered) in unconsumed {
+                tracing::warn!(
+                    instance_id = %instance_id,
+                    resolution = %buffered.description,
+                    "Resolution arrived before the matching work was scheduled and was not \
+                     consumed by the end of this execution; if it never matches this indicates \
+                     a non-deterministic workflow or an out-of-order history"
+                );
             }
+        }
 
-            actions.push(Self::make_complete_action(
-                actions.len() as i32,
-                proto::OrchestrationStatus::ContinuedAsNew,
-                Some(new_input),
-                carryover_events,
-                None,
-            ));
-        } else if let Some(status) = inner.completion_status {
-            match status {
-                OrchestrationStatus::Completed => {
-                    actions.push(Self::make_complete_action(
-                        actions.len() as i32,
-                        proto::OrchestrationStatus::Completed,
-                        inner.completion_result.take(),
-                        Vec::new(),
-                        None,
-                    ));
-                }
-                OrchestrationStatus::Failed => {
-                    let failure = inner.completion_failure.take();
-                    actions.push(Self::make_complete_action(
-                        actions.len() as i32,
-                        proto::OrchestrationStatus::Failed,
-                        None,
-                        Vec::new(),
-                        failure,
-                    ));
-                }
-                OrchestrationStatus::Terminated => {
-                    actions.push(Self::make_complete_action(
-                        actions.len() as i32,
-                        proto::OrchestrationStatus::Terminated,
-                        inner.completion_result.take(),
-                        Vec::new(),
-                        None,
-                    ));
-                }
-                _ => {
-                    // Other statuses (Pending, Running, etc.) don't produce completion actions
+        // A suspended workflow returns no actions unless it was terminated.
+        let mut actions: Vec<proto::WorkflowAction> = if inner.is_suspended && !inner.is_terminated
+        {
+            Vec::new()
+        } else {
+            std::mem::take(&mut inner.pending_actions)
+                .into_values()
+                .collect()
+        };
+        // A terminated workflow starts no new work: only its completion is sent.
+        if inner.is_terminated {
+            actions.retain(|a| {
+                matches!(
+                    a.workflow_action_type,
+                    Some(WorkflowActionType::CompleteWorkflow(_))
+                )
+            });
+        }
+
+        if inner.save_events_on_continue {
+            // Carry unconsumed events over in the order they arrived.
+            let mut buffered: Vec<&BufferedEvent> =
+                inner.buffered_events.values().flatten().collect();
+            buffered.sort_by_key(|b| b.arrival);
+            let carryover: Vec<proto::HistoryEvent> =
+                buffered.into_iter().map(|b| b.event.clone()).collect();
+            for action in &mut actions {
+                if let Some(WorkflowActionType::CompleteWorkflow(c)) =
+                    &mut action.workflow_action_type
+                    && c.workflow_status == proto::OrchestrationStatus::ContinuedAsNew as i32
+                {
+                    c.carryover_events = carryover.clone();
                 }
             }
         }
 
-        // Persist applied patches so the runtime records them in the next
+        // Report patches so the runtime records them on this turn's
         // WorkflowStarted event, enabling correct replay of patch-gated code.
-        let version = {
-            let mut applied: Vec<String> = inner
-                .applied_patches
-                .iter()
-                .filter(|(_, v)| **v)
-                .map(|(k, _)| k.clone())
-                .collect();
-            if applied.is_empty() {
-                None
-            } else {
-                applied.sort();
-                Some(proto::WorkflowVersion {
-                    patches: applied,
-                    name: None,
-                })
-            }
-        };
+        // Patches already in history are always reported, in history order
+        // (including ones no longer checked, such as the retired
+        // `dapr:external-event-timer`), or the runtime stalls the workflow.
+        let patches = inner.reported_patches();
+        let version = (!patches.is_empty()).then_some(proto::WorkflowVersion {
+            patches,
+            name: None,
+        });
 
         proto::WorkflowResponse {
             instance_id: instance_id.to_string(),
@@ -636,6 +856,58 @@ impl OrchestrationExecutor {
             version,
         }
     }
+}
+
+/// Classify a recorded timer: `Some(indefinite)` for an event-wait timer —
+/// tagged with the ExternalEvent origin or, on runtimes that do not persist
+/// origins, set in the far future — otherwise `None`. Earlier releases used a
+/// far-future sentinel without the nanoseconds, so compare by second.
+fn recorded_event_timer(t: &proto::TimerCreatedEvent) -> Option<bool> {
+    let far_future = t
+        .fire_at
+        .as_ref()
+        .is_some_and(|f| f.seconds >= FAR_FUTURE_TIMESTAMP.timestamp());
+    match t.origin {
+        Some(proto::timer_created_event::Origin::ExternalEvent(_)) => Some(far_future),
+        None if far_future => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether a pending timer action is the one a recorded timer describes. An
+/// event-wait timer only matches an event-wait action for the same event;
+/// other origins must agree when both are known (earlier releases recorded
+/// none).
+fn timer_matches(
+    action: &proto::CreateTimerAction,
+    recorded: Option<&proto::TimerCreatedEvent>,
+    recorded_event_timer: Option<bool>,
+) -> bool {
+    use proto::create_timer_action::Origin as Action;
+    use proto::timer_created_event::Origin as Recorded;
+    match (&action.origin, recorded.and_then(|t| t.origin.as_ref())) {
+        (Some(Action::ExternalEvent(a)), Some(Recorded::ExternalEvent(r))) => {
+            a.name.to_lowercase() == r.name.to_lowercase()
+        }
+        (Some(Action::ExternalEvent(_)), None) => true,
+        _ if recorded_event_timer.is_some() => false,
+        (Some(Action::CreateTimer(_)), Some(Recorded::CreateTimer(_)))
+        | (Some(Action::ActivityRetry(_)), Some(Recorded::ActivityRetry(_)))
+        | (Some(Action::ChildWorkflowRetry(_)), Some(Recorded::ChildWorkflowRetry(_)))
+        | (None, _)
+        | (_, None) => true,
+        _ => false,
+    }
+}
+
+/// Render a caught panic payload as a failure message.
+pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    let detail = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string());
+    format!("panic: {detail}")
 }
 
 #[cfg(test)]
@@ -786,7 +1058,8 @@ mod tests {
         let old_events = vec![
             make_workflow_started(ts),
             make_execution_started("test_orch", None),
-            make_task_scheduled(3, "greet"),
+            // A TaskScheduled event's ID is the action's sequence number.
+            make_task_scheduled(0, "greet"),
             make_task_completed(4, 0, Some("\"hello world\"".to_string())),
         ];
         let new_events = vec![];
@@ -876,7 +1149,7 @@ mod tests {
         let old_events = vec![
             make_workflow_started(ts),
             make_execution_started("test_orch", None),
-            make_task_scheduled(3, "greet"),
+            make_task_scheduled(0, "greet"),
             make_task_failed(4, 0),
         ];
         let new_events = vec![];
@@ -947,8 +1220,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_terminated_orchestration_not_run() {
-        let orch_fn: OrchestratorFn = Arc::new(|_ctx| Box::pin(async { panic!("should not run") }));
+    async fn test_terminated_orchestration_emits_only_termination() {
+        // The orchestrator runs up to its first await when ExecutionStarted is
+        // applied; the terminate then withholds the scheduled activity.
+        let orch_fn: OrchestratorFn = Arc::new(|ctx| {
+            Box::pin(async move {
+                let result = ctx.call_activity("greet", "world").await?;
+                Ok(result)
+            })
+        });
 
         let ts = chrono::Utc::now();
         let old_events = vec![make_workflow_started(ts)];
