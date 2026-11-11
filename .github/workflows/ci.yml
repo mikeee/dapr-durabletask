@@ -61,7 +61,7 @@ jobs:
           key: ${{ matrix.toolchain }}
           cache-on-failure: true
 
-      - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
         with:
           nix_path: nixpkgs=channel:nixpkgs-unstable
           extra_nix_config: |
