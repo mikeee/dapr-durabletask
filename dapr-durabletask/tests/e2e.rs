@@ -11183,26 +11183,45 @@ mod client_options {
         let guard = WorkerGuard::start(worker);
         let mut client = TaskHubGrpcClient::new(&addr).await.unwrap();
 
-        let name = "e2e-sched";
-        client
-            .create_workflow_schedule(
-                name,
-                "double_input",
-                "@every 1s",
-                CreateWorkflowScheduleOptions::new()
-                    .with_input("2")
-                    .with_repeats(3)
-                    .with_overwrite(),
-            )
-            .await
-            .unwrap();
-        let manual = client.trigger_workflow_schedule(name).await.unwrap();
+        // A name of its own per invocation: runs outlive their schedule, so a fixed
+        // name would count an earlier invocation's runs, and two invocations would
+        // overwrite each other's schedule.
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let name = format!("e2e-sched-{}", millis % 1_000_000_000);
+        let prefix = format!("{name}_");
+
+        // The worker task only starts connecting, and daprd refuses to create a
+        // schedule until a worker is connected.
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let options = CreateWorkflowScheduleOptions::new()
+                .with_input("2")
+                .with_repeats(3)
+                .with_overwrite();
+            match client
+                .create_workflow_schedule(&name, "double_input", "@every 1s", options)
+                .await
+            {
+                Ok(()) => break,
+                Err(DurableTaskError::GrpcError(status))
+                    if status.code() == tonic::Code::FailedPrecondition
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(500)).await
+                }
+                Err(err) => panic!("create schedule: {err:?}"),
+            }
+        }
+        let manual = client.trigger_workflow_schedule(&name).await.unwrap();
         assert!(manual.ends_with("_manual"), "{manual}");
 
         let deadline = tokio::time::Instant::now() + WAIT;
         let status = loop {
             let status = client
-                .get_workflow_schedule(name)
+                .get_workflow_schedule(&name)
                 .await
                 .unwrap()
                 .status
@@ -11220,20 +11239,35 @@ mod client_options {
         };
         assert_eq!(status.run_count, 3, "{status:?}");
         let last = status.last_run.expect("last run");
-        assert!(last.instance_id.starts_with("e2e-sched_"), "{last:?}");
+        assert!(last.instance_id.starts_with(&prefix), "{last:?}");
         assert_eq!(last.serialized_output.as_deref(), Some("4"), "{last:?}");
 
-        let page = client
-            .list_workflow_schedules(ListWorkflowSchedulesOptions::new())
-            .await
-            .unwrap();
-        assert!(page.schedules.iter().any(|s| s.name == name), "{page:?}");
+        // A page can come back short, even empty, while more remain, so follow the
+        // continuation token to the end.
+        let mut listed = false;
+        let mut options = ListWorkflowSchedulesOptions::new();
+        loop {
+            let page = client.list_workflow_schedules(options).await.unwrap();
+            listed |= page.schedules.iter().any(|s| s.name == name);
+            let Some(token) = page.continuation_token else {
+                break;
+            };
+            options = ListWorkflowSchedulesOptions::new().with_continuation_token(token);
+        }
+        assert!(listed, "schedule {name} not listed");
 
-        let ids = client
-            .list_instance_ids(ListInstanceIdsOptions::new().with_instance_id_prefix("e2e-sched_"))
-            .await
-            .unwrap()
-            .instance_ids;
+        let mut ids = Vec::new();
+        let mut options = ListInstanceIdsOptions::new().with_instance_id_prefix(&prefix);
+        loop {
+            let page = client.list_instance_ids(options).await.unwrap();
+            ids.extend(page.instance_ids);
+            let Some(token) = page.continuation_token else {
+                break;
+            };
+            options = ListInstanceIdsOptions::new()
+                .with_instance_id_prefix(&prefix)
+                .with_continuation_token(token);
+        }
         assert_eq!(ids.len(), 3, "{ids:?}");
         for id in &ids {
             assert_eq!(completed(&mut client, id).await.as_deref(), Some("4"));
@@ -11242,7 +11276,7 @@ mod client_options {
         assert_code(
             client
                 .create_workflow_schedule(
-                    name,
+                    &name,
                     "double_input",
                     "@every 1s",
                     CreateWorkflowScheduleOptions::new(),
@@ -11250,9 +11284,9 @@ mod client_options {
                 .await,
             tonic::Code::AlreadyExists,
         );
-        client.delete_workflow_schedule(name).await.unwrap();
+        client.delete_workflow_schedule(&name).await.unwrap();
         assert_code(
-            client.get_workflow_schedule(name).await,
+            client.get_workflow_schedule(&name).await,
             tonic::Code::NotFound,
         );
         for id in &ids {
