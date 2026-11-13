@@ -5,6 +5,27 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). While the
 crate is `0.0.x`, any release may contain breaking changes; they are listed
 first under **⚠️ Breaking changes** in each release.
 
+## [0.0.5] - 2026-11-13
+
+### Added
+
+- **Workflow schedules:** `TaskHubGrpcClient::create_workflow_schedule`,
+  `get_workflow_schedule`, `list_workflow_schedules`,
+  `delete_workflow_schedule` and `trigger_workflow_schedule`, with
+  `CreateWorkflowScheduleOptions`, `ListWorkflowSchedulesOptions`,
+  `WorkflowSchedulePage` and the `api::WorkflowSchedule` types. A schedule
+  starts a workflow on a cron schedule; each run is a new workflow instance.
+  Times missed while the app was down each start a run, unless
+  `CreateWorkflowScheduleOptions::with_skip_missed` is set. Requires Dapr
+  1.20 or later.
+- `ListInstanceIdsOptions::with_instance_id_prefix` lists only the instances
+  whose ID starts with a prefix, such as the runs of a schedule.
+
+### Dependencies
+
+- `dapr-durabletask-proto` 0.0.4: the protobuf types follow
+  durabletask-protobuf v0.7.0, which adds the workflow schedule RPCs.
+
 ## [0.0.4]
 
 ### ⚠️ Breaking changes
@@ -244,7 +265,8 @@ first under **⚠️ Breaking changes** in each release.
 - Optional OpenTelemetry tracing (`opentelemetry` feature, 0.32) (#6).
 - Package metadata (#8).
 
-[0.0.4]: https://github.com/mikeee/dapr-durabletask/compare/dapr-durabletask-v0.0.3...HEAD
+[0.0.5]: https://github.com/mikeee/dapr-durabletask/compare/dapr-durabletask-v0.0.4...HEAD
+[0.0.4]: https://github.com/mikeee/dapr-durabletask/compare/dapr-durabletask-v0.0.3...dapr-durabletask-v0.0.4
 [0.0.3]: https://github.com/mikeee/dapr-durabletask/compare/dapr-durabletask-v0.0.2...dapr-durabletask-v0.0.3
 [0.0.2]: https://github.com/mikeee/dapr-durabletask/compare/v0.0.1...dapr-durabletask-v0.0.2
 [0.0.1]: https://github.com/mikeee/dapr-durabletask/releases/tag/v0.0.1

@@ -1018,6 +1018,203 @@ pub mod workflow_action {
         CreateDetachedWorkflow(super::CreateDetachedWorkflowAction),
     }
 }
+/// WorkflowSchedule starts a workflow on a cron schedule. Each run is a new,
+/// detached workflow instance with the ID `{name}_{owner}_{fire time}`. The
+/// owner is the first 6 hex characters of the SHA-256 of `{namespace}/{app ID}`
+/// of the app that owns the schedule, so that same-named schedules of two apps
+/// that target one app do not share run IDs. The fire time is formatted as
+/// `20060102T150405Z` (UTC). A run started by TriggerWorkflowSchedule has the
+/// ID `{name}_{owner}_{trigger time}_manual`, where the trigger time has
+/// milliseconds: `20060102T150405000Z`. So the runs of a schedule are the
+/// instances whose ID starts with `{name}_{owner}_`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowSchedule {
+    /// name identifies the schedule within the app. It may contain only
+    /// letters, digits and '-', and is at most 30 characters long.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// workflowName is the name of the workflow each run starts.
+    #[prost(string, tag = "2")]
+    pub workflow_name: ::prost::alloc::string::String,
+    /// input is the raw (typically JSON) input given to every run.
+    #[prost(message, optional, tag = "3")]
+    pub input: ::core::option::Option<::prost::alloc::string::String>,
+    /// schedule is when runs start, in the syntax of the Dapr Jobs API: a
+    /// 6-field cron expression with seconds (`0 30 9 * * MON`),
+    /// `@every {duration}`, or one of `@yearly`, `@monthly`, `@weekly`,
+    /// `@daily` and `@hourly`. A `CRON_TZ={zone} ` prefix sets the time zone of
+    /// a cron expression, which is UTC otherwise.
+    #[prost(string, tag = "4")]
+    pub schedule: ::prost::alloc::string::String,
+    /// dueTime, when set, is the time of the first run. Otherwise the first run
+    /// is at the first time the schedule matches after it is created.
+    #[prost(message, optional, tag = "5")]
+    pub due_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// expirationTime, when set, is the time after which no run starts. The
+    /// schedule completes once its next run would be after it.
+    #[prost(message, optional, tag = "6")]
+    pub expiration_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// repeats, when set, is the number of runs, scheduled or triggered, after
+    /// which the schedule completes. It must be at least 1.
+    #[prost(uint32, optional, tag = "7")]
+    pub repeats: ::core::option::Option<u32>,
+    /// targetAppID, when set, is the app ID that hosts the workflow each run
+    /// starts. It defaults to the app that owns the schedule.
+    #[prost(string, optional, tag = "8")]
+    pub target_app_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// targetAppNamespace, when set, is the namespace of targetAppID. It
+    /// requires targetAppID.
+    #[prost(string, optional, tag = "9")]
+    pub target_app_namespace: ::core::option::Option<::prost::alloc::string::String>,
+    /// status is how the schedule stands. It is output only: the runtime fills
+    /// it on GetWorkflowSchedule and ListWorkflowSchedules and ignores it on
+    /// CreateWorkflowSchedule.
+    #[prost(message, optional, tag = "10")]
+    pub status: ::core::option::Option<WorkflowScheduleStatus>,
+    /// skipMissed, when true, starts one run for the times the schedule missed
+    /// while the app was down, rather than one run for each of them, and
+    /// carries on from the next time after now. When unset or false, every
+    /// missed time starts its own run, one after another, as with Dapr jobs
+    /// and actor reminders.
+    #[prost(bool, optional, tag = "11")]
+    pub skip_missed: ::core::option::Option<bool>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowScheduleStatus {
+    #[prost(enumeration = "WorkflowScheduleState", tag = "1")]
+    pub state: i32,
+    /// createdAt is when the schedule was created.
+    #[prost(message, optional, tag = "2")]
+    pub created_at: ::core::option::Option<::prost_types::Timestamp>,
+    /// nextRunTime is when the next run starts, unless it is triggered sooner.
+    /// Absent once the schedule is not active.
+    #[prost(message, optional, tag = "3")]
+    pub next_run_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// lastRunTime is the time the last run was started for: its fire time,
+    /// or when it was triggered.
+    #[prost(message, optional, tag = "4")]
+    pub last_run_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// runCount is the number of runs started so far.
+    #[prost(uint32, tag = "5")]
+    pub run_count: u32,
+    /// lastRun is how the last run stands, read from that workflow instance
+    /// when the schedule is queried. Absent before the first run.
+    #[prost(message, optional, tag = "6")]
+    pub last_run: ::core::option::Option<WorkflowScheduleRun>,
+    /// failureMessage is why the schedule failed, when state is FAILED.
+    #[prost(message, optional, tag = "7")]
+    pub failure_message: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// WorkflowScheduleRun is one run of a schedule. Only instanceId is set when the
+/// run's workflow instance cannot be read, for example because it was purged.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowScheduleRun {
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "OrchestrationStatus", optional, tag = "2")]
+    pub runtime_status: ::core::option::Option<i32>,
+    #[prost(message, optional, tag = "3")]
+    pub created_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "4")]
+    pub last_updated_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "5")]
+    pub output: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "6")]
+    pub failure_details: ::core::option::Option<TaskFailureDetails>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateWorkflowScheduleRequest {
+    #[prost(message, optional, tag = "1")]
+    pub schedule: ::core::option::Option<WorkflowSchedule>,
+    /// overwrite replaces an existing schedule of the same name. Runs it
+    /// already started are not affected. Without it, creating a schedule whose
+    /// name is taken fails with ALREADY_EXISTS.
+    #[prost(bool, tag = "2")]
+    pub overwrite: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateWorkflowScheduleResponse {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetWorkflowScheduleRequest {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetWorkflowScheduleResponse {
+    #[prost(message, optional, tag = "1")]
+    pub schedule: ::core::option::Option<WorkflowSchedule>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListWorkflowSchedulesRequest {
+    /// continuationToken is the token returned by the previous page, if any.
+    #[prost(string, optional, tag = "1")]
+    pub continuation_token: ::core::option::Option<::prost::alloc::string::String>,
+    /// pageSize is the maximum number of schedules to return.
+    #[prost(uint32, optional, tag = "2")]
+    pub page_size: ::core::option::Option<u32>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListWorkflowSchedulesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub schedules: ::prost::alloc::vec::Vec<WorkflowSchedule>,
+    /// continuationToken is set when there are more schedules to list. A page
+    /// can hold fewer than pageSize schedules while more remain, so callers
+    /// follow the token rather than the page length.
+    #[prost(string, optional, tag = "2")]
+    pub continuation_token: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteWorkflowScheduleRequest {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteWorkflowScheduleResponse {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TriggerWorkflowScheduleRequest {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TriggerWorkflowScheduleResponse {
+    /// instanceId is the ID of the run the trigger starts. Triggers within the
+    /// same millisecond get the same ID, so they start one run. A triggered run
+    /// counts towards repeats.
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WorkflowScheduleState {
+    /// The schedule is waiting for its next run.
+    Active = 0,
+    /// The schedule has no runs left, because of repeats or expirationTime.
+    Completed = 1,
+    /// The schedule stopped with an error, given in failureMessage.
+    Failed = 2,
+}
+impl WorkflowScheduleState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Active => "WORKFLOW_SCHEDULE_STATE_ACTIVE",
+            Self::Completed => "WORKFLOW_SCHEDULE_STATE_COMPLETED",
+            Self::Failed => "WORKFLOW_SCHEDULE_STATE_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WORKFLOW_SCHEDULE_STATE_ACTIVE" => Some(Self::Active),
+            "WORKFLOW_SCHEDULE_STATE_COMPLETED" => Some(Self::Completed),
+            "WORKFLOW_SCHEDULE_STATE_FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityRequest {
     #[prost(string, tag = "1")]
@@ -1374,6 +1571,10 @@ pub struct ListInstanceIDsRequest {
     /// not given, all instances will be attempted to be returned.
     #[prost(uint32, optional, tag = "2")]
     pub page_size: ::core::option::Option<u32>,
+    /// instanceIdPrefix, when set, returns only the instances whose ID starts
+    /// with it.
+    #[prost(string, optional, tag = "3")]
+    pub instance_id_prefix: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// ListInstanceIDsResponse is the response to executing ListInstanceIDs.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1957,6 +2158,136 @@ pub mod task_hub_sidecar_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("TaskHubSidecarService", "GetInstanceHistory"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Workflow schedules start a workflow on a cron schedule. See
+        /// workflow_schedule.proto.
+        pub async fn create_workflow_schedule(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateWorkflowScheduleRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateWorkflowScheduleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/TaskHubSidecarService/CreateWorkflowSchedule",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("TaskHubSidecarService", "CreateWorkflowSchedule"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_workflow_schedule(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetWorkflowScheduleRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetWorkflowScheduleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/TaskHubSidecarService/GetWorkflowSchedule",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("TaskHubSidecarService", "GetWorkflowSchedule"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_workflow_schedules(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListWorkflowSchedulesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListWorkflowSchedulesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/TaskHubSidecarService/ListWorkflowSchedules",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("TaskHubSidecarService", "ListWorkflowSchedules"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_workflow_schedule(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteWorkflowScheduleRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteWorkflowScheduleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/TaskHubSidecarService/DeleteWorkflowSchedule",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("TaskHubSidecarService", "DeleteWorkflowSchedule"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn trigger_workflow_schedule(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TriggerWorkflowScheduleRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TriggerWorkflowScheduleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/TaskHubSidecarService/TriggerWorkflowSchedule",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("TaskHubSidecarService", "TriggerWorkflowSchedule"),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
