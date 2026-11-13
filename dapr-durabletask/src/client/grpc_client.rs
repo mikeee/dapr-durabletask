@@ -1,6 +1,8 @@
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
-use crate::api::{DurableTaskError, OrchestrationState, PurgeInstanceFilter, Result};
+use crate::api::{
+    DurableTaskError, OrchestrationState, PurgeInstanceFilter, Result, WorkflowSchedule,
+};
 use crate::internal;
 use crate::proto;
 use crate::proto::task_hub_sidecar_service_client::TaskHubSidecarServiceClient;
@@ -9,6 +11,9 @@ use super::options::{
     ClientOptions, FetchOptions, ListInstanceIdsOptions, NewOrchestrationOptions, PurgeOptions,
     RaiseEventOptions, RerunOptions, ResumeOptions, SuspendOptions, TerminateOptions,
     validate_task_router,
+};
+use super::workflow_schedule::{
+    CreateWorkflowScheduleOptions, ListWorkflowSchedulesOptions, WorkflowSchedulePage,
 };
 
 /// One page of instance IDs returned by
@@ -259,6 +264,168 @@ impl TaskHubGrpcClient {
 
         tracing::debug!(instance_id = %result_id, "Orchestration scheduled");
         Ok(result_id)
+    }
+
+    /// Create a schedule that starts the workflow `workflow_name`
+    /// repeatedly. Each run is a new, detached workflow instance; see
+    /// [`WorkflowSchedule`] for the instance IDs runs get.
+    ///
+    /// `name` must be 1 to 30 letters, digits or `-`. `schedule` uses the
+    /// syntax of the Dapr Jobs API: a 6-field cron expression with seconds
+    /// (`"0 30 9 * * MON"`), `"@every <duration>"` (at least `1s`), or one of
+    /// `"@yearly"`, `"@monthly"`, `"@weekly"`, `"@daily"` and `"@hourly"`. A
+    /// `"CRON_TZ=<zone> "` prefix sets the time zone of a cron expression,
+    /// which is UTC otherwise.
+    ///
+    /// By default a schedule catches up after the app was down: every time it
+    /// missed starts its own run, one after another, as with Dapr jobs and
+    /// actor reminders. With
+    /// [`with_skip_missed`](CreateWorkflowScheduleOptions::with_skip_missed)
+    /// it starts one run for the missed times and carries on from the next
+    /// time after now.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use dapr_durabletask::client::CreateWorkflowScheduleOptions;
+    ///
+    /// # async fn example(mut client: dapr_durabletask::client::TaskHubGrpcClient) {
+    /// client
+    ///     .create_workflow_schedule(
+    ///         "nightly-report",
+    ///         "GenerateReport",
+    ///         "CRON_TZ=Europe/Paris 0 0 2 * * *",
+    ///         CreateWorkflowScheduleOptions::new().with_input(r#""full""#),
+    ///     )
+    ///     .await
+    ///     .unwrap();
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `name` or `workflow_name` is
+    /// empty, too long or contains control characters. Returns
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails, with code
+    /// [`tonic::Code::InvalidArgument`] for an invalid schedule,
+    /// [`tonic::Code::AlreadyExists`] if the name is taken and
+    /// [`overwrite`](CreateWorkflowScheduleOptions::overwrite) is not set, or
+    /// [`tonic::Code::Unimplemented`] if the runtime does not support
+    /// workflow schedules.
+    pub async fn create_workflow_schedule(
+        &mut self,
+        name: &str,
+        workflow_name: &str,
+        schedule: &str,
+        options: CreateWorkflowScheduleOptions,
+    ) -> Result<()> {
+        internal::validate_identifier(
+            name,
+            "workflow schedule name",
+            self.options.max_identifier_length,
+        )?;
+        internal::validate_identifier(
+            workflow_name,
+            "workflow name",
+            self.options.max_identifier_length,
+        )?;
+        tracing::info!(
+            name = %name,
+            workflow = %workflow_name,
+            schedule = %schedule,
+            "Creating workflow schedule"
+        );
+        let request = options.to_request(name, workflow_name, schedule);
+        self.inner.create_workflow_schedule(request).await?;
+        Ok(())
+    }
+
+    /// Get a workflow schedule with its status, including how its last run
+    /// went.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `name` is invalid. Returns
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails, with code
+    /// [`tonic::Code::NotFound`] if the schedule does not exist.
+    pub async fn get_workflow_schedule(&mut self, name: &str) -> Result<WorkflowSchedule> {
+        internal::validate_identifier(
+            name,
+            "workflow schedule name",
+            self.options.max_identifier_length,
+        )?;
+        let request = proto::GetWorkflowScheduleRequest {
+            name: name.to_string(),
+        };
+        let response = self.inner.get_workflow_schedule(request).await?;
+        response
+            .into_inner()
+            .schedule
+            .map(WorkflowSchedule::from)
+            .ok_or_else(|| {
+                DurableTaskError::Other(format!(
+                    "sidecar returned no workflow schedule for '{name}'"
+                ))
+            })
+    }
+
+    /// List the app's workflow schedules with their status, one page at a
+    /// time. Keep requesting pages until the continuation token is `None`.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::GrpcError`] if the sidecar RPC fails.
+    pub async fn list_workflow_schedules(
+        &mut self,
+        options: ListWorkflowSchedulesOptions,
+    ) -> Result<WorkflowSchedulePage> {
+        let response = self
+            .inner
+            .list_workflow_schedules(options.to_request())
+            .await?;
+        Ok(response.into_inner().into())
+    }
+
+    /// Delete a workflow schedule. Runs it already started are not affected.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `name` is invalid. Returns
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails, with code
+    /// [`tonic::Code::NotFound`] if the schedule does not exist.
+    pub async fn delete_workflow_schedule(&mut self, name: &str) -> Result<()> {
+        internal::validate_identifier(
+            name,
+            "workflow schedule name",
+            self.options.max_identifier_length,
+        )?;
+        tracing::info!(name = %name, "Deleting workflow schedule");
+        let request = proto::DeleteWorkflowScheduleRequest {
+            name: name.to_string(),
+        };
+        self.inner.delete_workflow_schedule(request).await?;
+        Ok(())
+    }
+
+    /// Start a run of a workflow schedule now, without changing when its next
+    /// scheduled run is. Returns the run's instance ID,
+    /// `<name>_<owner>_<trigger time>_manual`, with the trigger time in
+    /// milliseconds. Triggers within the same millisecond start one run.
+    ///
+    /// # Errors
+    /// Returns [`DurableTaskError::Other`] if `name` is invalid. Returns
+    /// [`DurableTaskError::GrpcError`] if the sidecar RPC fails, with code
+    /// [`tonic::Code::NotFound`] if the schedule does not exist, or
+    /// [`tonic::Code::FailedPrecondition`] if it has completed or no
+    /// workflow worker is connected for the app.
+    pub async fn trigger_workflow_schedule(&mut self, name: &str) -> Result<String> {
+        internal::validate_identifier(
+            name,
+            "workflow schedule name",
+            self.options.max_identifier_length,
+        )?;
+        tracing::info!(name = %name, "Triggering workflow schedule");
+        let request = proto::TriggerWorkflowScheduleRequest {
+            name: name.to_string(),
+        };
+        let response = self.inner.trigger_workflow_schedule(request).await?;
+        Ok(response.into_inner().instance_id)
     }
 
     /// Get the current state of an orchestration.

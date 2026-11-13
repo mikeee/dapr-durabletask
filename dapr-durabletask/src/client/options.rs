@@ -664,6 +664,9 @@ pub struct ListInstanceIdsOptions {
     /// Continuation token from a previous page. `None` requests the first
     /// page.
     pub continuation_token: Option<String>,
+    /// List only the instances whose ID starts with this prefix. For example
+    /// `"<schedule name>_"` lists the runs of a workflow schedule.
+    pub instance_id_prefix: Option<String>,
 }
 
 impl Default for ListInstanceIdsOptions {
@@ -671,6 +674,7 @@ impl Default for ListInstanceIdsOptions {
         Self {
             page_size: Some(1024),
             continuation_token: None,
+            instance_id_prefix: None,
         }
     }
 }
@@ -693,10 +697,18 @@ impl ListInstanceIdsOptions {
         self
     }
 
+    /// List only the instances whose ID starts with `prefix`. See
+    /// [`Self::instance_id_prefix`].
+    pub fn with_instance_id_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.instance_id_prefix = Some(prefix.into());
+        self
+    }
+
     pub(crate) fn to_request(&self) -> proto::ListInstanceIDsRequest {
         proto::ListInstanceIDsRequest {
             continuation_token: self.continuation_token.clone(),
             page_size: self.page_size,
+            instance_id_prefix: self.instance_id_prefix.clone(),
         }
     }
 }
@@ -1014,13 +1026,15 @@ mod tests {
         assert!(FetchOptions::default().fetch_payloads);
         let req = ListInstanceIdsOptions::new().to_request();
         assert_eq!(req.page_size, Some(1024));
-        assert!(req.continuation_token.is_none());
+        assert!(req.continuation_token.is_none() && req.instance_id_prefix.is_none());
         let req = ListInstanceIdsOptions::new()
             .with_page_size(2)
             .with_continuation_token("t")
+            .with_instance_id_prefix("nightly_")
             .to_request();
         assert_eq!(req.page_size, Some(2));
         assert_eq!(req.continuation_token.as_deref(), Some("t"));
+        assert_eq!(req.instance_id_prefix.as_deref(), Some("nightly_"));
     }
 
     #[test]

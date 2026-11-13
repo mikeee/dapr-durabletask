@@ -10833,6 +10833,11 @@ mod client_options {
 
     fn worker(env: &harness::TestEnv) -> TaskHubGrpcWorker {
         let mut worker = env.new_worker();
+        register(&mut worker);
+        worker
+    }
+
+    fn register(worker: &mut TaskHubGrpcWorker) {
         worker.registry_mut().add_named_activity(
             "double",
             |_ctx: ActivityContext, input: Option<String>| async move {
@@ -10851,7 +10856,6 @@ mod client_options {
             .add_named_orchestrator("echo_event", |ctx| async move {
                 ctx.wait_for_external_event("go").await
             });
-        worker
     }
 
     async fn completed(client: &mut TaskHubGrpcClient, id: &str) -> Option<String> {
@@ -11077,6 +11081,183 @@ mod client_options {
             .unwrap();
         assert_eq!(completed(&mut client, &id).await.as_deref(), Some("4"));
         client.close();
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn list_instance_ids_by_prefix() {
+        use dapr_durabletask::client::ListInstanceIdsOptions;
+
+        setup!(env);
+        let guard = WorkerGuard::start(worker(&env));
+        let mut client = env.new_client().await;
+        for id in ["nightly_1", "nightly_2", "nightly-x_1"] {
+            client
+                .schedule_new_orchestration("double_input", Some("1".into()), Some(id.into()), None)
+                .await
+                .unwrap();
+        }
+        let mut ids = client
+            .list_instance_ids(ListInstanceIdsOptions::new().with_instance_id_prefix("nightly_"))
+            .await
+            .unwrap()
+            .instance_ids;
+        ids.sort();
+        assert_eq!(ids, ["nightly_1", "nightly_2"]);
+        guard.stop().await;
+    }
+
+    #[tokio::test]
+    async fn workflow_schedules_are_unimplemented_by_the_standalone_sidecar() {
+        use dapr_durabletask::api::DurableTaskError;
+        use dapr_durabletask::client::{
+            CreateWorkflowScheduleOptions, ListWorkflowSchedulesOptions,
+        };
+
+        fn assert_unimplemented<T: std::fmt::Debug>(res: dapr_durabletask::api::Result<T>) {
+            match res {
+                Err(DurableTaskError::GrpcError(status)) => {
+                    assert_eq!(status.code(), tonic::Code::Unimplemented, "{status}")
+                }
+                other => panic!("expected Unimplemented, got {other:?}"),
+            }
+        }
+
+        setup!(env);
+        let mut client = env.new_client().await;
+        assert_unimplemented(
+            client
+                .create_workflow_schedule(
+                    "nightly",
+                    "double_input",
+                    "@daily",
+                    CreateWorkflowScheduleOptions::new(),
+                )
+                .await,
+        );
+        assert_unimplemented(client.get_workflow_schedule("nightly").await);
+        assert_unimplemented(
+            client
+                .list_workflow_schedules(ListWorkflowSchedulesOptions::new())
+                .await,
+        );
+        assert_unimplemented(client.delete_workflow_schedule("nightly").await);
+        assert_unimplemented(client.trigger_workflow_schedule("nightly").await);
+
+        // Names are validated before anything is sent.
+        let err = client
+            .trigger_workflow_schedule("")
+            .await
+            .expect_err("empty schedule name");
+        assert!(matches!(err, DurableTaskError::Other(_)), "{err}");
+    }
+
+    /// Needs a daprd with workflow schedules (Dapr 1.20 or later) whose gRPC
+    /// endpoint, with scheme, is in `DAPR_GRPC_ENDPOINT`, for example
+    /// `http://127.0.0.1:50001`. Skipped otherwise.
+    #[tokio::test]
+    async fn workflow_schedules_round_trip_against_daprd() {
+        use dapr_durabletask::api::{DurableTaskError, WorkflowScheduleState};
+        use dapr_durabletask::client::{
+            CreateWorkflowScheduleOptions, ListInstanceIdsOptions, ListWorkflowSchedulesOptions,
+        };
+
+        fn assert_code<T: std::fmt::Debug>(
+            res: dapr_durabletask::api::Result<T>,
+            want: tonic::Code,
+        ) {
+            match res {
+                Err(DurableTaskError::GrpcError(status)) => {
+                    assert_eq!(status.code(), want, "{status}")
+                }
+                other => panic!("expected {want:?}, got {other:?}"),
+            }
+        }
+
+        let Ok(addr) = std::env::var("DAPR_GRPC_ENDPOINT") else {
+            eprintln!("skipped: set DAPR_GRPC_ENDPOINT to a dapr master sidecar");
+            return;
+        };
+        let mut worker = TaskHubGrpcWorker::new(&addr);
+        register(&mut worker);
+        let guard = WorkerGuard::start(worker);
+        let mut client = TaskHubGrpcClient::new(&addr).await.unwrap();
+
+        let name = "e2e-sched";
+        client
+            .create_workflow_schedule(
+                name,
+                "double_input",
+                "@every 1s",
+                CreateWorkflowScheduleOptions::new()
+                    .with_input("2")
+                    .with_repeats(3)
+                    .with_overwrite(),
+            )
+            .await
+            .unwrap();
+        let manual = client.trigger_workflow_schedule(name).await.unwrap();
+        assert!(manual.ends_with("_manual"), "{manual}");
+
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let status = loop {
+            let status = client
+                .get_workflow_schedule(name)
+                .await
+                .unwrap()
+                .status
+                .expect("status");
+            let last_done = status.last_run.as_ref().and_then(|run| run.runtime_status)
+                == Some(OrchestrationStatus::Completed);
+            if status.state == WorkflowScheduleState::Completed && last_done {
+                break status;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "schedule did not complete: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert_eq!(status.run_count, 3, "{status:?}");
+        let last = status.last_run.expect("last run");
+        assert!(last.instance_id.starts_with("e2e-sched_"), "{last:?}");
+        assert_eq!(last.serialized_output.as_deref(), Some("4"), "{last:?}");
+
+        let page = client
+            .list_workflow_schedules(ListWorkflowSchedulesOptions::new())
+            .await
+            .unwrap();
+        assert!(page.schedules.iter().any(|s| s.name == name), "{page:?}");
+
+        let ids = client
+            .list_instance_ids(ListInstanceIdsOptions::new().with_instance_id_prefix("e2e-sched_"))
+            .await
+            .unwrap()
+            .instance_ids;
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in &ids {
+            assert_eq!(completed(&mut client, id).await.as_deref(), Some("4"));
+        }
+
+        assert_code(
+            client
+                .create_workflow_schedule(
+                    name,
+                    "double_input",
+                    "@every 1s",
+                    CreateWorkflowScheduleOptions::new(),
+                )
+                .await,
+            tonic::Code::AlreadyExists,
+        );
+        client.delete_workflow_schedule(name).await.unwrap();
+        assert_code(
+            client.get_workflow_schedule(name).await,
+            tonic::Code::NotFound,
+        );
+        for id in &ids {
+            client.purge_orchestration(id, false).await.unwrap();
+        }
         guard.stop().await;
     }
 }
