@@ -3,6 +3,7 @@
 /// deterministically serialized form of this message is what the signer
 /// signs over and what receivers verify against; the bytes are produced
 /// once and never re-marshaled.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildCompletionAttestationPayload {
     /// Parent workflow instance ID. Binds the attestation to a single parent
@@ -50,6 +51,7 @@ pub struct ChildCompletionAttestationPayload {
     pub canonical_spec_version: u32,
 }
 /// Signed wrapper around ChildCompletionAttestationPayload.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildCompletionAttestation {
     /// Deterministically serialized form of ChildCompletionAttestationPayload
@@ -69,6 +71,7 @@ pub struct ChildCompletionAttestation {
 /// there is no finalSignatureDigest field. Activity identity is the hosting
 /// app's SPIFFE identity; a compromised app can attest only to activities
 /// it hosts, not to activities hosted on other apps.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityCompletionAttestationPayload {
     /// Parent workflow instance ID that scheduled the activity.
@@ -106,6 +109,7 @@ pub struct ActivityCompletionAttestationPayload {
     pub canonical_spec_version: u32,
 }
 /// Signed wrapper around ActivityCompletionAttestationPayload.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityCompletionAttestation {
     /// Deterministically serialized form of
@@ -129,6 +133,7 @@ pub struct ActivityCompletionAttestation {
 /// BackendWorkflowStateMetadata.externalSigningCertificateLength). Dedup
 /// within a run is performed by in-memory digest→index lookup built at
 /// load time.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExternalSigningCertificate {
     /// sha256 of the DER-encoded X.509 certificate chain bytes (the value
@@ -144,6 +149,7 @@ pub struct ExternalSigningCertificate {
     pub certificate: ::prost::alloc::vec::Vec<u8>,
 }
 /// Terminal state of a child workflow at the moment of attestation.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum TerminalStatus {
@@ -176,6 +182,7 @@ impl TerminalStatus {
 /// Terminal state of an activity task at the moment of attestation.
 /// Activities have no "terminate" operation, so the space is smaller than
 /// TerminalStatus.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ActivityTerminalStatus {
@@ -205,6 +212,7 @@ impl ActivityTerminalStatus {
         }
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskRouter {
     #[prost(string, tag = "1")]
@@ -214,6 +222,7 @@ pub struct TaskRouter {
     #[prost(string, optional, tag = "3")]
     pub target_app_namespace: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowVersion {
     #[prost(string, repeated, tag = "1")]
@@ -222,6 +231,7 @@ pub struct WorkflowVersion {
     #[prost(string, optional, tag = "2")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowInstance {
     #[prost(string, tag = "1")]
@@ -229,6 +239,7 @@ pub struct WorkflowInstance {
     #[prost(message, optional, tag = "2")]
     pub execution_id: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskFailureDetails {
     #[prost(string, tag = "1")]
@@ -244,6 +255,7 @@ pub struct TaskFailureDetails {
     #[prost(bool, tag = "5")]
     pub is_non_retriable: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ParentInstanceInfo {
     #[prost(int32, tag = "1")]
@@ -262,6 +274,7 @@ pub struct ParentInstanceInfo {
 /// RerunParentInstanceInfo is used to indicate that this workflow was
 /// started as part of a rerun operation. Contains information about the parent
 /// workflow instance which was rerun.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RerunParentInstanceInfo {
     /// instanceID is the workflow instance ID this workflow has been
@@ -281,6 +294,7 @@ pub struct RerunParentInstanceInfo {
 /// the first attempt's instance ID. Consumers group attempts by reading the
 /// parent workflow's history; the group key is retryParentInstanceInfo.instanceID
 /// when present, otherwise the event's own instanceId.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetryParentInstanceInfo {
     /// instanceID is the instance ID of the first attempt in this child-workflow
@@ -288,6 +302,7 @@ pub struct RetryParentInstanceInfo {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TraceContext {
     #[prost(string, tag = "1")]
@@ -298,6 +313,7 @@ pub struct TraceContext {
     #[prost(message, optional, tag = "3")]
     pub trace_state: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowState {
     #[prost(string, tag = "1")]
@@ -338,6 +354,7 @@ pub struct WorkflowState {
     #[prost(message, optional, tag = "17")]
     pub started_at: ::core::option::Option<::prost_types::Timestamp>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum StalledReason {
@@ -367,6 +384,7 @@ impl StalledReason {
         }
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum OrchestrationStatus {
@@ -416,6 +434,7 @@ impl OrchestrationStatus {
 }
 /// HistoryPropagationScope controls how history is propagated to a child
 /// workflow or activity
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum HistoryPropagationScope {
@@ -452,6 +471,7 @@ impl HistoryPropagationScope {
         }
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStartedEvent {
     #[prost(string, tag = "1")]
@@ -476,6 +496,7 @@ pub struct ExecutionStartedEvent {
         ::prost::alloc::string::String,
     >,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionCompletedEvent {
     #[prost(enumeration = "OrchestrationStatus", tag = "1")]
@@ -485,6 +506,7 @@ pub struct ExecutionCompletedEvent {
     #[prost(message, optional, tag = "3")]
     pub failure_details: ::core::option::Option<TaskFailureDetails>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionTerminatedEvent {
     #[prost(message, optional, tag = "1")]
@@ -492,6 +514,7 @@ pub struct ExecutionTerminatedEvent {
     #[prost(bool, tag = "2")]
     pub recurse: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskScheduledEvent {
     #[prost(string, tag = "1")]
@@ -514,6 +537,7 @@ pub struct TaskScheduledEvent {
     #[prost(enumeration = "HistoryPropagationScope", optional, tag = "7")]
     pub history_propagation_scope: ::core::option::Option<i32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskCompletedEvent {
     #[prost(int32, tag = "1")]
@@ -538,6 +562,7 @@ pub struct TaskCompletedEvent {
     #[prost(bytes = "vec", optional, tag = "5")]
     pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskFailedEvent {
     #[prost(int32, tag = "1")]
@@ -553,6 +578,7 @@ pub struct TaskFailedEvent {
     #[prost(bytes = "vec", optional, tag = "5")]
     pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildWorkflowInstanceCreatedEvent {
     #[prost(string, tag = "1")]
@@ -582,6 +608,7 @@ pub struct ChildWorkflowInstanceCreatedEvent {
     #[prost(message, optional, tag = "8")]
     pub retry_parent_instance_info: ::core::option::Option<RetryParentInstanceInfo>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildWorkflowInstanceCompletedEvent {
     #[prost(int32, tag = "1")]
@@ -604,6 +631,7 @@ pub struct ChildWorkflowInstanceCompletedEvent {
     #[prost(bytes = "vec", optional, tag = "4")]
     pub signer_certificate: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildWorkflowInstanceFailedEvent {
     #[prost(int32, tag = "1")]
@@ -624,15 +652,18 @@ pub struct ChildWorkflowInstanceFailedEvent {
 /// back), so this event only stores a pointer to the spawned instance — the
 /// inputs themselves are consumed directly from the action when scheduling.
 /// Replay matches on instanceId, so it is the same value the action carried.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DetachedWorkflowInstanceCreatedEvent {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
 /// Indicates the timer was created by a createTimer call with no special origin.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerOriginCreateTimer {}
 /// Indicates the timer was created as a timeout for a waitForExternalEvent call.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerOriginExternalEvent {
     /// The name of the external event being waited on, matching EventRaisedEvent.name.
@@ -640,6 +671,7 @@ pub struct TimerOriginExternalEvent {
     pub name: ::prost::alloc::string::String,
 }
 /// Indicates the timer was created as a retry delay for an activity execution.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerOriginActivityRetry {
     /// The task execution ID of the activity being retried.
@@ -647,12 +679,14 @@ pub struct TimerOriginActivityRetry {
     pub task_execution_id: ::prost::alloc::string::String,
 }
 /// Indicates the timer was created as a retry delay for a child workflow execution.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerOriginChildWorkflowRetry {
     /// The instance ID of the workflow being retried.
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerCreatedEvent {
     #[prost(message, optional, tag = "1")]
@@ -670,6 +704,7 @@ pub struct TimerCreatedEvent {
 /// Nested message and enum types in `TimerCreatedEvent`.
 pub mod timer_created_event {
     /// If set, provides additional context attached to this timer.
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Origin {
         #[prost(message, tag = "4")]
@@ -682,6 +717,7 @@ pub mod timer_created_event {
         ChildWorkflowRetry(super::TimerOriginChildWorkflowRetry),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimerFiredEvent {
     #[prost(message, optional, tag = "1")]
@@ -689,14 +725,17 @@ pub struct TimerFiredEvent {
     #[prost(int32, tag = "2")]
     pub timer_id: i32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowStartedEvent {
     #[prost(message, optional, tag = "1")]
     pub version: ::core::option::Option<WorkflowVersion>,
 }
 /// No payload data
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowCompletedEvent {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EventSentEvent {
     #[prost(string, tag = "1")]
@@ -706,6 +745,7 @@ pub struct EventSentEvent {
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EventRaisedEvent {
     #[prost(string, tag = "1")]
@@ -713,21 +753,25 @@ pub struct EventRaisedEvent {
     #[prost(message, optional, tag = "2")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ContinueAsNewEvent {
     #[prost(message, optional, tag = "1")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionSuspendedEvent {
     #[prost(message, optional, tag = "1")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionResumedEvent {
     #[prost(message, optional, tag = "1")]
     pub input: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionStalledEvent {
     #[prost(enumeration = "StalledReason", tag = "1")]
@@ -735,6 +779,7 @@ pub struct ExecutionStalledEvent {
     #[prost(string, optional, tag = "2")]
     pub description: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HistoryEvent {
     #[prost(int32, tag = "1")]
@@ -751,6 +796,7 @@ pub struct HistoryEvent {
 }
 /// Nested message and enum types in `HistoryEvent`.
 pub mod history_event {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum EventType {
         #[prost(message, tag = "3")]
@@ -800,6 +846,7 @@ pub mod history_event {
 /// or activity. Each chunk owns the raw event bytes its producer signed;
 /// receivers digest those bytes directly and decode them into typed
 /// HistoryEvents on demand.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PropagatedHistoryChunk {
     /// Raw deterministic bytes of each HistoryEvent in this chunk, in execution
@@ -835,6 +882,7 @@ pub struct PropagatedHistoryChunk {
     #[prost(bytes = "vec", repeated, tag = "6")]
     pub signing_cert_chains: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PropagatedHistory {
     /// The propagation scope that was used to produce this history.
@@ -848,6 +896,7 @@ pub struct PropagatedHistory {
     #[prost(message, repeated, tag = "2")]
     pub chunks: ::prost::alloc::vec::Vec<PropagatedHistoryChunk>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ScheduleTaskAction {
     #[prost(string, tag = "1")]
@@ -862,6 +911,7 @@ pub struct ScheduleTaskAction {
     #[prost(enumeration = "HistoryPropagationScope", optional, tag = "6")]
     pub history_propagation_scope: ::core::option::Option<i32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateChildWorkflowAction {
     #[prost(string, tag = "1")]
@@ -892,6 +942,7 @@ pub struct CreateChildWorkflowAction {
 /// workflow, no completion is awaited, and no failure propagation flows back.
 /// The creation is recorded once in the caller's history as a
 /// DetachedWorkflowInstanceCreatedEvent referencing the new instance ID.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateDetachedWorkflowAction {
     /// instanceId is the ID assigned to the new workflow. It is mandatory:
@@ -922,6 +973,7 @@ pub struct CreateDetachedWorkflowAction {
     #[prost(message, optional, tag = "8")]
     pub parent_trace_context: ::core::option::Option<TraceContext>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateTimerAction {
     #[prost(message, optional, tag = "1")]
@@ -935,6 +987,7 @@ pub struct CreateTimerAction {
 /// Nested message and enum types in `CreateTimerAction`.
 pub mod create_timer_action {
     /// If set, provides additional context attached to this timer.
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Origin {
         #[prost(message, tag = "3")]
@@ -947,6 +1000,7 @@ pub mod create_timer_action {
         ChildWorkflowRetry(super::TimerOriginChildWorkflowRetry),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SendEventAction {
     #[prost(message, optional, tag = "1")]
@@ -956,6 +1010,7 @@ pub struct SendEventAction {
     #[prost(message, optional, tag = "3")]
     pub data: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CompleteWorkflowAction {
     #[prost(enumeration = "OrchestrationStatus", tag = "1")]
@@ -971,6 +1026,7 @@ pub struct CompleteWorkflowAction {
     #[prost(message, optional, tag = "6")]
     pub failure_details: ::core::option::Option<TaskFailureDetails>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TerminateWorkflowAction {
     #[prost(string, tag = "1")]
@@ -980,8 +1036,10 @@ pub struct TerminateWorkflowAction {
     #[prost(bool, tag = "3")]
     pub recurse: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowVersionNotAvailableAction {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowAction {
     #[prost(int32, tag = "1")]
@@ -998,6 +1056,7 @@ pub struct WorkflowAction {
 }
 /// Nested message and enum types in `WorkflowAction`.
 pub mod workflow_action {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum WorkflowActionType {
         #[prost(message, tag = "2")]
@@ -1027,6 +1086,7 @@ pub mod workflow_action {
 /// ID `{name}_{owner}_{trigger time}_manual`, where the trigger time has
 /// milliseconds: `20060102T150405000Z`. So the runs of a schedule are the
 /// instances whose ID starts with `{name}_{owner}_`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowSchedule {
     /// name identifies the schedule within the app. It may contain only
@@ -1079,6 +1139,7 @@ pub struct WorkflowSchedule {
     #[prost(bool, optional, tag = "11")]
     pub skip_missed: ::core::option::Option<bool>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowScheduleStatus {
     #[prost(enumeration = "WorkflowScheduleState", tag = "1")]
@@ -1107,6 +1168,7 @@ pub struct WorkflowScheduleStatus {
 }
 /// WorkflowScheduleRun is one run of a schedule. Only instanceId is set when the
 /// run's workflow instance cannot be read, for example because it was purged.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowScheduleRun {
     #[prost(string, tag = "1")]
@@ -1122,6 +1184,7 @@ pub struct WorkflowScheduleRun {
     #[prost(message, optional, tag = "6")]
     pub failure_details: ::core::option::Option<TaskFailureDetails>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateWorkflowScheduleRequest {
     #[prost(message, optional, tag = "1")]
@@ -1132,18 +1195,22 @@ pub struct CreateWorkflowScheduleRequest {
     #[prost(bool, tag = "2")]
     pub overwrite: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateWorkflowScheduleResponse {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkflowScheduleRequest {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetWorkflowScheduleResponse {
     #[prost(message, optional, tag = "1")]
     pub schedule: ::core::option::Option<WorkflowSchedule>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListWorkflowSchedulesRequest {
     /// continuationToken is the token returned by the previous page, if any.
@@ -1153,6 +1220,7 @@ pub struct ListWorkflowSchedulesRequest {
     #[prost(uint32, optional, tag = "2")]
     pub page_size: ::core::option::Option<u32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListWorkflowSchedulesResponse {
     #[prost(message, repeated, tag = "1")]
@@ -1163,18 +1231,22 @@ pub struct ListWorkflowSchedulesResponse {
     #[prost(string, optional, tag = "2")]
     pub continuation_token: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteWorkflowScheduleRequest {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteWorkflowScheduleResponse {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TriggerWorkflowScheduleRequest {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TriggerWorkflowScheduleResponse {
     /// instanceId is the ID of the run the trigger starts. Triggers within the
@@ -1183,6 +1255,7 @@ pub struct TriggerWorkflowScheduleResponse {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum WorkflowScheduleState {
@@ -1215,6 +1288,7 @@ impl WorkflowScheduleState {
         }
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityRequest {
     #[prost(string, tag = "1")]
@@ -1237,6 +1311,7 @@ pub struct ActivityRequest {
     #[prost(message, optional, tag = "8")]
     pub propagated_history: ::core::option::Option<PropagatedHistory>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityResponse {
     #[prost(string, tag = "1")]
@@ -1261,6 +1336,7 @@ pub struct ActivityResponse {
 /// WORKER_CAPABILITY_STATEFUL_HISTORY and that it believes to be warm for the
 /// instance, so it is always safe for a worker to fall back to the
 /// GetInstanceHistory RPC.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CachedHistory {
     /// eventCount is the number of leading (committed) history events the
@@ -1272,6 +1348,7 @@ pub struct CachedHistory {
     #[prost(int32, tag = "1")]
     pub event_count: i32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowRequest {
     #[prost(string, tag = "1")]
@@ -1298,6 +1375,7 @@ pub struct WorkflowRequest {
     #[prost(message, optional, tag = "9")]
     pub cached_history: ::core::option::Option<CachedHistory>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkflowResponse {
     #[prost(string, tag = "1")]
@@ -1315,6 +1393,7 @@ pub struct WorkflowResponse {
     #[prost(message, optional, tag = "6")]
     pub version: ::core::option::Option<WorkflowVersion>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateInstanceRequest {
     #[prost(string, tag = "1")]
@@ -1349,11 +1428,19 @@ pub struct CreateInstanceRequest {
     #[prost(message, optional, tag = "11")]
     pub router: ::core::option::Option<TaskRouter>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateInstanceResponse {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "2")]
+    pub staged: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetInstanceRequest {
     #[prost(string, tag = "1")]
@@ -1365,6 +1452,7 @@ pub struct GetInstanceRequest {
     #[prost(message, optional, tag = "3")]
     pub router: ::core::option::Option<TaskRouter>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetInstanceResponse {
     #[prost(bool, tag = "1")]
@@ -1372,6 +1460,7 @@ pub struct GetInstanceResponse {
     #[prost(message, optional, tag = "2")]
     pub workflow_state: ::core::option::Option<WorkflowState>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RaiseEventRequest {
     #[prost(string, tag = "1")]
@@ -1385,9 +1474,17 @@ pub struct RaiseEventRequest {
     #[prost(message, optional, tag = "4")]
     pub router: ::core::option::Option<TaskRouter>,
 }
-/// No payload
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RaiseEventResponse {}
+pub struct RaiseEventResponse {
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "1")]
+    pub staged: bool,
+}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TerminateRequest {
     #[prost(string, tag = "1")]
@@ -1401,9 +1498,17 @@ pub struct TerminateRequest {
     #[prost(message, optional, tag = "4")]
     pub router: ::core::option::Option<TaskRouter>,
 }
-/// No payload
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TerminateResponse {}
+pub struct TerminateResponse {
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "1")]
+    pub staged: bool,
+}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SuspendRequest {
     #[prost(string, tag = "1")]
@@ -1415,9 +1520,17 @@ pub struct SuspendRequest {
     #[prost(message, optional, tag = "3")]
     pub router: ::core::option::Option<TaskRouter>,
 }
-/// No payload
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SuspendResponse {}
+pub struct SuspendResponse {
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "1")]
+    pub staged: bool,
+}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResumeRequest {
     #[prost(string, tag = "1")]
@@ -1429,9 +1542,17 @@ pub struct ResumeRequest {
     #[prost(message, optional, tag = "3")]
     pub router: ::core::option::Option<TaskRouter>,
 }
-/// No payload
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ResumeResponse {}
+pub struct ResumeResponse {
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "1")]
+    pub staged: bool,
+}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PurgeInstancesRequest {
     #[prost(bool, tag = "3")]
@@ -1458,6 +1579,7 @@ pub struct PurgeInstancesRequest {
 }
 /// Nested message and enum types in `PurgeInstancesRequest`.
 pub mod purge_instances_request {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Request {
         #[prost(string, tag = "1")]
@@ -1466,6 +1588,7 @@ pub mod purge_instances_request {
         PurgeInstanceFilter(super::PurgeInstanceFilter),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PurgeInstanceFilter {
     #[prost(message, optional, tag = "1")]
@@ -1475,6 +1598,7 @@ pub struct PurgeInstanceFilter {
     #[prost(enumeration = "OrchestrationStatus", repeated, tag = "3")]
     pub runtime_status: ::prost::alloc::vec::Vec<i32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PurgeInstancesResponse {
     #[prost(int32, tag = "1")]
@@ -1482,6 +1606,7 @@ pub struct PurgeInstancesResponse {
     #[prost(message, optional, tag = "2")]
     pub is_complete: ::core::option::Option<bool>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkItemsRequest {
     /// capabilities advertises the optional protocol features this worker
@@ -1491,6 +1616,7 @@ pub struct GetWorkItemsRequest {
     #[prost(enumeration = "WorkerCapability", repeated, tag = "4")]
     pub capabilities: ::prost::alloc::vec::Vec<i32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkItem {
     #[prost(string, tag = "10")]
@@ -1500,6 +1626,7 @@ pub struct WorkItem {
 }
 /// Nested message and enum types in `WorkItem`.
 pub mod work_item {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Request {
         #[prost(message, tag = "1")]
@@ -1510,13 +1637,16 @@ pub mod work_item {
         HealthPing(super::HealthPing),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HealthPing {}
 /// No payload
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompleteTaskResponse {}
 /// RerunWorkflowFromEventRequest is used to rerun a workflow instance from a
 /// specific event ID.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RerunWorkflowFromEventRequest {
     /// sourceInstanceID is the workflow instance ID to rerun. Can be a top
@@ -1554,12 +1684,20 @@ pub struct RerunWorkflowFromEventRequest {
 }
 /// RerunWorkflowFromEventResponse is the response to executing
 /// RerunWorkflowFromEvent.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RerunWorkflowFromEventResponse {
     #[prost(string, tag = "1")]
     pub new_instance_id: ::prost::alloc::string::String,
+    /// staged is true when the sidecar accepted the operation but no workflow
+    /// worker was connected to run it. The operation is saved and runs once a
+    /// worker connects. False when the operation ran at once, and on sidecars
+    /// that do not stage operations.
+    #[prost(bool, tag = "2")]
+    pub staged: bool,
 }
 /// ListInstanceIDsRequest is used to list all workflow instances.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListInstanceIDsRequest {
     /// continuationToken is the continuation token to use for pagination. This
@@ -1577,6 +1715,7 @@ pub struct ListInstanceIDsRequest {
     pub instance_id_prefix: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// ListInstanceIDsResponse is the response to executing ListInstanceIDs.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListInstanceIDsResponse {
     /// instanceIds is the list of instance IDs returned.
@@ -1589,17 +1728,20 @@ pub struct ListInstanceIDsResponse {
 }
 /// GetInstanceHistoryRequest is used to get the full history of a
 /// workflow instance.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetInstanceHistoryRequest {
     #[prost(string, tag = "1")]
     pub instance_id: ::prost::alloc::string::String,
 }
 /// GetInstanceHistoryResponse is the response to executing GetInstanceHistory.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetInstanceHistoryResponse {
     #[prost(message, repeated, tag = "1")]
     pub events: ::prost::alloc::vec::Vec<HistoryEvent>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum WorkerCapability {
