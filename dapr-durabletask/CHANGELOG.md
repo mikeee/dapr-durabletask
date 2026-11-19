@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). While the
 crate is `0.0.x`, any release may contain breaking changes; they are listed
 first under **⚠️ Breaking changes** in each release.
 
-## [0.0.5] - 2026-11-13
+## [0.0.5]
 
 ### Added
 
