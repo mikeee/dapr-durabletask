@@ -1,7 +1,7 @@
 [package]
 name = "dapr-durabletask"
 description = "Dapr Durable Task Framework"
-version = "0.0.4"
+version = "0.0.5"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ proto = []
 
 [dependencies]
 # Protobuf types
-dapr-durabletask-proto = { path = "../dapr-durabletask-proto", version = "0.0.3" }
+dapr-durabletask-proto = { path = "../dapr-durabletask-proto", version = "0.0.4" }
 
 # gRPC
 tonic = { version = "0.14.5", features = ["tls-ring"] }

@@ -6,6 +6,7 @@ mod orchestration_state;
 mod orchestration_status;
 mod purge_instance_filter;
 mod retry_policy;
+mod workflow_schedule;
 
 pub use errors::{DurableTaskError, Result};
 pub use external_event::ExternalEventResult;
@@ -18,3 +19,6 @@ pub use orchestration_state::{InstanceNotFound, OrchestrationState};
 pub use orchestration_status::OrchestrationStatus;
 pub use purge_instance_filter::PurgeInstanceFilter;
 pub use retry_policy::RetryPolicy;
+pub use workflow_schedule::{
+    WorkflowSchedule, WorkflowScheduleRun, WorkflowScheduleState, WorkflowScheduleStatus,
+};
