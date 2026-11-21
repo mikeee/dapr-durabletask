@@ -769,10 +769,10 @@ impl DispatchContext<'_> {
     }
 }
 
-/// Build the `GetWorkItems` request, advertising the stateful-history
-/// capability when enabled.
+/// Build the `GetWorkItems` request, always advertising health pings and the
+/// stateful-history capability when enabled.
 fn work_items_request(options: &WorkerOptions) -> proto::GetWorkItemsRequest {
-    let mut capabilities = Vec::new();
+    let mut capabilities = vec![proto::WorkerCapability::HealthPing as i32];
     if options.stateful_history {
         capabilities.push(proto::WorkerCapability::StatefulHistory as i32);
     }
@@ -2026,14 +2026,20 @@ mod tests {
         }
 
         #[test]
-        fn test_work_items_request_advertises_stateful_history() {
+        fn test_work_items_request_advertises_capabilities() {
             let req = work_items_request(&WorkerOptions::default());
             assert_eq!(
                 req.capabilities,
-                vec![proto::WorkerCapability::StatefulHistory as i32]
+                vec![
+                    proto::WorkerCapability::HealthPing as i32,
+                    proto::WorkerCapability::StatefulHistory as i32,
+                ]
             );
             let req = work_items_request(&WorkerOptions::new().with_stateful_history_disabled());
-            assert!(req.capabilities.is_empty());
+            assert_eq!(
+                req.capabilities,
+                vec![proto::WorkerCapability::HealthPing as i32]
+            );
         }
     }
 }
