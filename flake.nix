@@ -66,7 +66,9 @@
             elif [ ! -f "$SIDECAR_BIN" ]; then
               echo "Building durabletask-go sidecar..."
               mkdir -p "$PWD/tmp"
-              GOPATH="$PWD/tmp/go" go install github.com/dapr/durabletask-go@latest
+              # The first revision whose sidecar filters ListInstanceIDs by prefix; move to
+              # a release tag once one has it.
+              GOPATH="$PWD/tmp/go" go install github.com/dapr/durabletask-go@v0.16.1-0.20261109153237-98658f38d8cb
               cp "$PWD/tmp/go/bin/durabletask-go" "$SIDECAR_BIN"
               echo "Sidecar built: $SIDECAR_BIN"
             fi
